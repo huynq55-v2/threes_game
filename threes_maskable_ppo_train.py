@@ -93,6 +93,18 @@ class ThreesGymEnv(gym.Env):
                 
         return {"board": board_final, "hint": hint_vec}
 
+    def undo(self):
+        # Gọi hàm undo từ Rust
+        board_flat, reward, done, hint_set = self.game.undo()
+        # Chuyển đổi sang observation format mà Model hiểu
+        obs = self._process_obs(board_flat, hint_set)
+        return obs
+
+    def redo(self):
+        board_flat, reward, done, hint_set = self.game.redo()
+        obs = self._process_obs(board_flat, hint_set)
+        return obs
+
 # --- HÀM MAKE ENV (QUAN TRỌNG: Phải định nghĩa ở đây để multiprocessing gọi được) ---
 def make_env():
     env = ThreesGymEnv()
@@ -100,7 +112,7 @@ def make_env():
     env = ActionMasker(env, lambda env: env.valid_action_mask())
     # 2. Monitor: QUAN TRỌNG NHẤT ĐỂ HIỆN LOG SB3
     # Nó sẽ ghi lại Reward và Moves để hiển thị trong bảng log
-    env = Monitor(env) 
+    env = Monitor(env)
     return env
 
 # ==========================================

@@ -77,6 +77,57 @@ impl ThreesEnv {
         )
     }
 
+    // Cập nhật hàm Undo để trả về bộ tuple đầy đủ
+    fn undo(&mut self) -> PyResult<(Vec<u32>, f32, bool, Vec<u32>)> {
+        if let Some(prev) = self.history.pop() {
+            // Lưu trạng thái hiện tại vào tương lai trước khi quay lại
+            self.future_history.push(self.game.clone());
+            self.game = prev;
+        }
+
+        // Trả về dữ liệu trạng thái sau khi đã lùi lại
+        Ok((
+            self.get_board_flat(),
+            0.0, // Reward của undo thường là 0
+            self.game.check_game_over(),
+            self.game.hints.clone(),
+        ))
+    }
+
+    fn redo(&mut self) -> PyResult<(Vec<u32>, f32, bool, Vec<u32>)> {
+        if let Some(next) = self.future_history.pop() {
+            self.history.push(self.game.clone());
+            self.game = next;
+        }
+
+        Ok((
+            self.get_board_flat(),
+            0.0,
+            self.game.check_game_over(),
+            self.game.hints.clone(),
+        ))
+    }
+
+    fn set_board(&mut self, flat_board: Vec<u32>, num_move: u32, next_value: u32) {
+        let mut new_board = [[crate::tile::Tile::new(0); 4]; 4];
+        for i in 0..16 {
+            let r = i / 4;
+            let c = i % 4;
+            new_board[r][c] = crate::tile::Tile::new(flat_board[i]);
+        }
+
+        // Cập nhật trạng thái game
+        self.game.board = new_board;
+        self.game.num_move = num_move;
+        self.game.future_value = next_value;
+        self.game.hints = self.game.predict_future(); // Tự tính lại hint
+        self.game.calculate_score();
+
+        // Xóa lịch sử cũ để tránh lỗi Undo/Redo
+        self.history.clear();
+        self.future_history.clear();
+    }
+
     fn valid_moves(&self) -> Vec<bool> {
         vec![
             self.game.can_move(Direction::Up),
@@ -192,22 +243,6 @@ impl ThreesEnv {
             Ok(InputEvent::Quit) => Ok(None),
             Err(e) => Err(pyo3::exceptions::PyIOError::new_err(e.to_string())),
         }
-    }
-
-    fn undo(&mut self) -> PyResult<Vec<u32>> {
-        if let Some(prev) = self.history.pop() {
-            self.future_history.push(self.game.clone());
-            self.game = prev;
-        }
-        Ok(self.get_board_flat())
-    }
-
-    fn redo(&mut self) -> PyResult<Vec<u32>> {
-        if let Some(next) = self.future_history.pop() {
-            self.history.push(self.game.clone());
-            self.game = next;
-        }
-        Ok(self.get_board_flat())
     }
 }
 

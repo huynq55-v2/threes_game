@@ -515,4 +515,21 @@ mod tests {
             valid_b
         );
     }
+
+    #[test]
+    fn test_bug_report_down_move() {
+        // 0 0 2 0
+        // 0 2 0 3
+        // 0 0 1 1
+        // 3 6 3 1
+        let mut board = [[Tile::new(0); 4]; 4];
+        board[0] = [Tile::new(0), Tile::new(0), Tile::new(2), Tile::new(0)];
+        board[1] = [Tile::new(0), Tile::new(2), Tile::new(0), Tile::new(3)];
+        board[2] = [Tile::new(0), Tile::new(0), Tile::new(1), Tile::new(1)];
+        board[3] = [Tile::new(3), Tile::new(6), Tile::new(3), Tile::new(1)];
+        
+        let game = Game::new_with_board(board, 10);
+        let can = game.can_move(Direction::Down);
+        assert!(can, "Should be able to move Down");
+    }
 }
