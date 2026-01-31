@@ -26,6 +26,14 @@ pub struct Game {
     pub hints: Vec<u32>,
 }
 
+#[derive(Clone, Debug)]
+pub struct GameStats {
+    pub max_val: u32,
+    pub max_count: u32,
+    pub pre_max_count: u32,
+    pub hub_count: u32,
+}
+
 impl Game {
     pub fn new() -> Self {
         let score = 0;
@@ -100,6 +108,79 @@ impl Game {
             }
         }
         max_rank
+    }
+    
+    pub fn get_highest_tile_value(&self) -> u32 {
+        let mut max_val = 0;
+        for r in 0..4 {
+            for c in 0..4 {
+                let val = self.board[r][c].value;
+                if val > max_val {
+                    max_val = val;
+                }
+            }
+        }
+        max_val
+    }
+
+    pub fn count_tiles_with_value(&self, val: u32) -> u32 {
+        let mut count = 0;
+        for r in 0..4 {
+            for c in 0..4 {
+                if self.board[r][c].value == val {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    pub fn get_game_stats(&self) -> GameStats {
+        let mut rank_counts = [0u32; 16];
+        let mut max_rank = 0;
+        let mut max_val = 0;
+
+        // 1. Single pass to count ranks and find max
+        for r in 0..4 {
+            for c in 0..4 {
+                let val = self.board[r][c].value;
+                if val > 0 {
+                    let rank = get_rank_from_value(val);
+                    if (rank as usize) < 16 {
+                        rank_counts[rank as usize] += 1;
+                    }
+                    if val > max_val {
+                        max_val = val;
+                        max_rank = rank;
+                    }
+                }
+            }
+        }
+
+        let max_count = if max_val > 0 { rank_counts[max_rank as usize] } else { 0 };
+
+        // 2. Pre-Max
+        // Pre-Max logic: If Max > 3, Pre-Max = Max / 2.
+        let pre_max_val = if max_val > 3 { max_val / 2 } else { 0 };
+        let pre_max_count = if pre_max_val > 0 {
+             let r = get_rank_from_value(pre_max_val);
+             rank_counts[r as usize]
+        } else { 0 };
+
+        // 3. Hub
+        // Hub logic: If Max >= 24, Hub = Max / 8.
+        let hub_val = if max_val >= 24 { max_val / 8 } else { 0 };
+        let hub_count = if hub_val > 0 {
+            let r = get_rank_from_value(hub_val);
+            rank_counts[r as usize]
+        } else { 0 };
+
+        GameStats {
+            max_val,
+            max_count,
+            pre_max_count,
+            hub_count,
+        }
     }
 
     pub fn calculate_score(&mut self) {

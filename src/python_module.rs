@@ -8,16 +8,28 @@ pub struct ThreesEnv {
     game: Game,
     history: Vec<Game>,
     future_history: Vec<Game>,
+    // For reward calculation
+    prev_max_val: u32,
+    prev_max_count: u32,
+    prev_pre_max_count: u32,
+    prev_hub_count: u32,
 }
 
 #[pymethods]
 impl ThreesEnv {
     #[new]
     fn new() -> Self {
+        let game = Game::new();
+        // Initialize stats from the new game state
+        let stats = game.get_game_stats();
         ThreesEnv {
-            game: Game::new(),
+            game,
             history: Vec::new(),
             future_history: Vec::new(),
+            prev_max_val: stats.max_val,
+            prev_max_count: stats.max_count,
+            prev_pre_max_count: stats.pre_max_count,
+            prev_hub_count: stats.hub_count,
         }
     }
 
@@ -26,6 +38,13 @@ impl ThreesEnv {
         self.game = Game::new();
         self.history.clear();
         self.future_history.clear();
+
+        let stats = self.game.get_game_stats();
+        self.prev_max_val = stats.max_val;
+        self.prev_max_count = stats.max_count;
+        self.prev_pre_max_count = stats.pre_max_count;
+        self.prev_hub_count = stats.hub_count;
+
         (self.get_board_flat(), self.game.hints.clone())
     }
 
@@ -41,8 +60,6 @@ impl ThreesEnv {
             _ => return (self.get_board_flat(), -10.0, true, self.game.hints.clone()),
         };
 
-        let old_score = self.game.score;
-
         // Logic lưu history (giữ nguyên)
         if self.game.can_move(dir) {
             self.history.push(self.game.clone());
@@ -50,23 +67,88 @@ impl ThreesEnv {
         }
 
         let moved = self.game.move_dir(dir);
-        let new_score = self.game.score;
         let game_over = self.game.check_game_over();
 
-        // Logic tính reward (giữ nguyên)
-        let reward = if moved {
-            let delta = new_score as f32 - old_score as f32;
-            if delta > 0.0 {
-                (delta + 1.0).log2()
-            } else {
-                0.05
-            }
-        } else {
-            // invalid move logic (Maskable PPO sẽ chặn cái này, nhưng cứ để -1 cho chắc)
-            -1.0
-        };
+        let mut final_reward = 0.0;
+        let scale = 0.01;
 
-        let final_reward = if game_over { reward - 50.0 } else { reward };
+        if game_over {
+            if self.game.get_game_stats().max_val < 96 {
+                final_reward = -729.0 * scale;
+            }
+        } else if moved {
+            // New Stats
+            let stats = self.game.get_game_stats();
+            let current_rank = crate::tile::get_rank_from_value(stats.max_val);
+            let value_points = (3u32.pow(current_rank as u32) as f32) * scale;
+
+            // Pre-Max Points
+            let pre_max_val = if stats.max_val > 3 {
+                stats.max_val / 2
+            } else {
+                0
+            };
+            let pre_max_rank = if pre_max_val > 0 {
+                crate::tile::get_rank_from_value(pre_max_val)
+            } else {
+                0
+            };
+            let pre_max_points = if pre_max_val > 0 {
+                (3u32.pow(pre_max_rank as u32) as f32) * scale
+            } else {
+                0.0
+            };
+
+            // Hub Points
+            let hub_val = if stats.max_val >= 24 {
+                stats.max_val / 8
+            } else {
+                0
+            };
+            let hub_rank = if hub_val > 0 {
+                crate::tile::get_rank_from_value(hub_val)
+            } else {
+                0
+            };
+            let hub_points = if hub_val > 0 {
+                (3u32.pow(hub_rank as u32) as f32) * scale
+            } else {
+                0.0
+            };
+
+            // 1. Level Up
+            if stats.max_val > self.prev_max_val {
+                final_reward += value_points;
+            }
+
+            // 2. Max Penalty (Count 2 -> 3)
+            if stats.max_count >= 3 && self.prev_max_count < 3 {
+                final_reward -= value_points;
+            }
+
+            // 3. Pre-Max Penalty (Count 2 -> 3), Threshold 48
+            if stats.max_val >= 48 {
+                if stats.pre_max_count >= 3 && self.prev_pre_max_count < 3 {
+                    final_reward -= pre_max_points;
+                }
+            }
+
+            // 4. Hub Penalty (Count 4 -> 5), Threshold 24
+            if stats.max_val >= 24 {
+                if stats.hub_count >= 5 && self.prev_hub_count < 5 {
+                    final_reward -= hub_points;
+                }
+            }
+
+            // Update history stats
+            self.prev_max_val = stats.max_val;
+            self.prev_max_count = stats.max_count;
+            self.prev_pre_max_count = stats.pre_max_count;
+            self.prev_hub_count = stats.hub_count;
+        } else {
+            // Invalid move penalty (if needed, though Maskable PPO handles this)
+            final_reward = -0.1;
+        }
 
         // 2. Return đủ 4 món: (Board, Reward, Done, HINT)
         (
