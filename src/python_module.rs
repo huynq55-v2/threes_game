@@ -78,20 +78,12 @@ impl ThreesEnv {
     }
 
     fn valid_moves(&self) -> Vec<bool> {
-        let mut mask = vec![false; 4];
-        if self.game.can_move(Direction::Up) {
-            mask[0] = true;
-        }
-        if self.game.can_move(Direction::Down) {
-            mask[1] = true;
-        }
-        if self.game.can_move(Direction::Left) {
-            mask[2] = true;
-        }
-        if self.game.can_move(Direction::Right) {
-            mask[3] = true;
-        }
-        mask
+        vec![
+            self.game.can_move(Direction::Up),
+            self.game.can_move(Direction::Down),
+            self.game.can_move(Direction::Left),
+            self.game.can_move(Direction::Right),
+        ]
     }
 
     fn get_hint_set(&self) -> Vec<u32> {
