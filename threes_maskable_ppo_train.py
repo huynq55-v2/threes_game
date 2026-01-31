@@ -10,6 +10,7 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
+from stable_baselines3.common.monitor import Monitor
 import threes_rs  # Thư viện Rust của bạn
 
 # --- CẤU HÌNH ---
@@ -46,6 +47,14 @@ class ThreesGymEnv(gym.Env):
     def step(self, action):
         next_board, reward, done, next_hint_set = self.game.step(int(action))
         
+        # --- THÊM ĐOẠN NÀY ĐỂ IN LOG RA MÀN HÌNH ---
+        if done:
+            # Lấy Max Tile từ bàn cờ
+            # Lưu ý: next_board đang là list phẳng hoặc array
+            max_val = max(next_board) 
+            print(f"💀 Game Over! Reward: {reward:.2f} | MaxTile: {max_val}")
+        # -------------------------------------------
+        
         # Scale reward
         reward = reward * 0.1 
         
@@ -78,8 +87,11 @@ class ThreesGymEnv(gym.Env):
 # --- HÀM MAKE ENV (QUAN TRỌNG: Phải định nghĩa ở đây để multiprocessing gọi được) ---
 def make_env():
     env = ThreesGymEnv()
-    # Bọc ActionMasker để PPO nhìn thấy mask
+    # 1. Action Masker
     env = ActionMasker(env, lambda env: env.valid_action_mask())
+    # 2. Monitor: QUAN TRỌNG NHẤT ĐỂ HIỆN LOG SB3
+    # Nó sẽ ghi lại Reward và Moves để hiển thị trong bảng log
+    env = Monitor(env) 
     return env
 
 # ==========================================
