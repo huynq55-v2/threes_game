@@ -21,32 +21,29 @@ impl ThreesEnv {
         }
     }
 
-    fn reset(&mut self) -> Vec<u32> {
+    // reset return board and hints
+    fn reset(&mut self) -> (Vec<u32>, Vec<u32>) {
         self.game = Game::new();
         self.history.clear();
         self.future_history.clear();
-        self.get_board_flat()
+        (self.get_board_flat(), self.game.hints.clone())
     }
 
-    fn step(&mut self, action: u32) -> (Vec<u32>, f32, bool) {
-        // Save history before move/checking invalid
-        // Actually, only save if move is valid or we just checkpoint everything?
-        // Since we return reward, invalid moves are "transitions" too (state doesn't change).
-        // If we want exact undo, we should save for every step?
-        // Or only save when board changes?
-        // User wants "undo", implying reverting moves.
-
+    // Return signature thay đổi từ (Vec, f32, bool) -> (Vec, f32, bool, Vec)
+    fn step(&mut self, action: u32) -> (Vec<u32>, f32, bool, Vec<u32>) {
+        // 1. Xử lý Action không hợp lệ (Input rác)
         let dir = match action {
             0 => Direction::Up,
             1 => Direction::Down,
             2 => Direction::Left,
             3 => Direction::Right,
-            _ => return (self.get_board_flat(), -10.0, true),
+            // Chú ý: Return ở đây cũng phải đủ 4 thành phần
+            _ => return (self.get_board_flat(), -10.0, true, self.game.hints.clone()),
         };
 
         let old_score = self.game.score;
 
-        // Check valid move first to decide on history?
+        // Logic lưu history (giữ nguyên)
         if self.game.can_move(dir) {
             self.history.push(self.game.clone());
             self.future_history.clear();
@@ -56,21 +53,28 @@ impl ThreesEnv {
         let new_score = self.game.score;
         let game_over = self.game.check_game_over();
 
+        // Logic tính reward (giữ nguyên)
         let reward = if moved {
             let delta = new_score as f32 - old_score as f32;
             if delta > 0.0 {
                 (delta + 1.0).log2()
             } else {
-                0.1
+                0.05
             }
         } else {
-            // invalid move
+            // invalid move logic (Maskable PPO sẽ chặn cái này, nhưng cứ để -1 cho chắc)
             -1.0
         };
 
-        let final_reward = if game_over { reward - 10.0 } else { reward };
+        let final_reward = if game_over { reward - 50.0 } else { reward };
 
-        (self.get_board_flat(), final_reward, game_over)
+        // 2. Return đủ 4 món: (Board, Reward, Done, HINT)
+        (
+            self.get_board_flat(),
+            final_reward,
+            game_over,
+            self.game.hints.clone(), // <--- BỔ SUNG CÁI NÀY
+        )
     }
 
     fn valid_moves(&self) -> Vec<bool> {
