@@ -3,6 +3,7 @@ import numpy as np
 from gymnasium import spaces
 from sb3_contrib.common.wrappers import ActionMasker
 import threes_rs  # Import thư viện Rust của bạn
+from stable_baselines3.common.monitor import Monitor # <--- Import cái này
 
 class ThreesGymEnv(gym.Env):
     """
@@ -49,7 +50,15 @@ class ThreesGymEnv(gym.Env):
         next_board, reward, done, next_hint_set = self.game.step(int(action))
         
         # Xử lý Reward (Scale nhỏ lại để PPO học ổn định hơn)
-        reward = reward * 0.1 
+        reward = reward * 0.1
+
+        # --- THÊM ĐOẠN NÀY ĐỂ IN LOG RA MÀN HÌNH ---
+        if done:
+            # Lấy Max Tile từ bàn cờ
+            # Lưu ý: next_board đang là list phẳng hoặc array
+            max_val = max(next_board) 
+            print(f"💀 Game Over! Reward: {reward:.2f} | MaxTile: {max_val}")
+        # -------------------------------------------
         
         observation = self._process_obs(next_board, next_hint_set)
         truncated = False 
@@ -98,6 +107,11 @@ class ThreesGymEnv(gym.Env):
 # Hàm helper để tạo env (bắt buộc cho SubprocVecEnv)
 def make_env():
     env = ThreesGymEnv()
-    # Bọc ActionMasker ở ngoài cùng để SB3 nhìn thấy mask
+    # 1. Action Masker (để chặn nước đi sai)
     env = ActionMasker(env, lambda env: env.valid_action_mask())
+    
+    # 2. Monitor (để Log Reward và Moves cho SB3)
+    # allow_early_resets=True giúp tránh lỗi nếu reset game giữa chừng
+    env = Monitor(env, allow_early_resets=True) 
+    
     return env
