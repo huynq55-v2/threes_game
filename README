@@ -1,0 +1,42 @@
+Hướng Dẫn Deploy Lên Kaggle
+Để huấn luyện hình trên Kaggle, bạn cần đóng gói code Rust thành thư viện Python (.whl). Quy trình như sau:
+
+1. Cài đặt Maturin
+Trên máy local (Linux của bạn):
+
+pip install maturin
+2. Build Wheel
+Trong thư mục dự án threes_game, chạy lệnh:
+
+maturin build --release
+Lệnh này sẽ tạo ra file .whl trong thư mục target/wheels/. Ví dụ: threes_rs-0.1.0-cp310-cp310-manylinux_2_34_x86_64.whl.
+
+Lưu ý: Đảm bảo phiên bản Python trên máy bạn tương thích với Kaggle (thường là Python 3.10). Nếu không, bạn cần dùng Docker hoặc pyenv để build đúng phiên bản.
+
+3. Upload lên Kaggle
+Vào Kaggle, tạo một Dataset mới (ví dụ threes-rs-lib).
+Upload file .whl vừa tạo vào Dataset đó.
+Tạo một Notebook mới (nhớ chọn GPU P100 hoặc T4).
+Ở cột bên phải, chọn Add Data -> Chọn Dataset threes-rs-lib bạn vừa tạo.
+4. Cài đặt và Chạy trên Kaggle
+Trong Notebook:
+
+Cell 1: Cài đặt thư viện
+
+# Điều chỉnh đường dẫn theo file bạn upload
+!pip install /kaggle/input/threes-rs-lib/threes_rs-0.1.0-cp310-....whl
+Cell 2: Copy nội dung file 
+train_kaggle.py
+ vào đây và chạy.
+
+import threes_rs
+print(threes_rs.ThreesEnv().reset())
+# Paste toàn bộ code train vào đây
+5. Lưu Model
+Script đã được cấu hình để lưu checkpoint threes_pro_latest.pth. Bạn có thể tải file này về sau khi train xong (nằm trong /kaggle/working).
+
+Lưu ý về maturin và glibc
+Nếu gặp lỗi version glibc khi chạy trên Kaggle, bạn nên build bằng Docker container manylinux để tương thích tối đa:
+
+docker run --rm -v $(pwd):/io ghcr.io/pyo3/maturin build --release --interpreter 3.13
+Lệnh này sẽ tạo ra file wheel chuẩn manylinux, chạy được trên mọi môi trường Linux.
