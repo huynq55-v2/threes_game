@@ -48,115 +48,60 @@ impl ThreesEnv {
         (self.get_board_flat(), self.game.hints.clone())
     }
 
-    // Return signature thay đổi từ (Vec, f32, bool) -> (Vec, f32, bool, Vec)
+    // Return signature: (Board, Reward, Done, Hints)
     fn step(&mut self, action: u32) -> (Vec<u32>, f32, bool, Vec<u32>) {
-        // 1. Xử lý Action không hợp lệ (Input rác)
+        // 1. Map Action
         let dir = match action {
             0 => Direction::Up,
             1 => Direction::Down,
             2 => Direction::Left,
             3 => Direction::Right,
-            // Chú ý: Return ở đây cũng phải đủ 4 thành phần
             _ => return (self.get_board_flat(), -10.0, true, self.game.hints.clone()),
         };
 
-        // Logic lưu history (giữ nguyên)
+        // 2. Init Reward & Scale
+        // Giả sử scale để normalize reward về khoảng nhỏ cho PPO
+        let scale = 0.01;
+        let mut reward = 0.0;
+
+        // --- LOGIC 1: TRỪ PHÍ GIÀ (Aging Penalty) ---
+        // Cứ mỗi step là trừ, bất kể có đi được hay không
+        reward -= 1.0 * scale;
+
+        // 3. Thực hiện Move
         if self.game.can_move(dir) {
+            // Lưu history cho Undo nếu cần
             self.history.push(self.game.clone());
             self.future_history.clear();
-        }
 
-        let moved = self.game.move_dir(dir);
-        let game_over = self.game.check_game_over();
+            // Gọi hàm move đã sửa, lấy về danh sách các Rank vừa gộp được
+            let (moved, merged_ranks) = self.game.move_dir(dir);
+            let game_over = self.game.check_game_over();
 
-        let mut final_reward = 0.0;
-        let scale = 0.01;
-
-        if game_over {
-            if self.game.get_game_stats().max_val < 96 {
-                final_reward = -729.0 * scale;
-            }
-        } else if moved {
-            // New Stats
-            let stats = self.game.get_game_stats();
-            let current_rank = crate::tile::get_rank_from_value(stats.max_val);
-            let value_points = (3u32.pow(current_rank as u32) as f32) * scale;
-
-            // Pre-Max Points
-            let pre_max_val = if stats.max_val > 3 {
-                stats.max_val / 2
-            } else {
-                0
-            };
-            let pre_max_rank = if pre_max_val > 0 {
-                crate::tile::get_rank_from_value(pre_max_val)
-            } else {
-                0
-            };
-            let pre_max_points = if pre_max_val > 0 {
-                (3u32.pow(pre_max_rank as u32) as f32) * scale
-            } else {
-                0.0
-            };
-
-            // Hub Points
-            let hub_val = if stats.max_val >= 24 {
-                stats.max_val / 8
-            } else {
-                0
-            };
-            let hub_rank = if hub_val > 0 {
-                crate::tile::get_rank_from_value(hub_val)
-            } else {
-                0
-            };
-            let hub_points = if hub_val > 0 {
-                (3u32.pow(hub_rank as u32) as f32) * scale
-            } else {
-                0.0
-            };
-
-            // 1. Level Up
-            if stats.max_val > self.prev_max_val {
-                final_reward += value_points;
-            }
-
-            // 2. Max Penalty (Count 2 -> 3)
-            if stats.max_count >= 3 && self.prev_max_count < 3 {
-                final_reward -= value_points;
-            }
-
-            // 3. Pre-Max Penalty (Count 2 -> 3), Threshold 48
-            if stats.max_val >= 48 {
-                if stats.pre_max_count >= 3 && self.prev_pre_max_count < 3 {
-                    final_reward -= pre_max_points;
+            if moved {
+                // --- LOGIC 2: THƯỞNG MERGE (Energy Density Reward) ---
+                for rank in merged_ranks {
+                    // Công thức: 2^(rank - 1)
+                    // Rank 1 (số 3) -> 2^0 = 1
+                    // Rank 2 (số 6) -> 2^1 = 2
+                    // Rank 3 (số 12) -> 2^2 = 4
+                    if rank >= 1 {
+                        let bonus = 2.0_f32.powi(rank as i32 - 1);
+                        reward += bonus * scale;
+                    }
                 }
             }
 
-            // 4. Hub Penalty (Count 4 -> 5), Threshold 24
-            if stats.max_val >= 24 {
-                if stats.hub_count >= 5 && self.prev_hub_count < 5 {
-                    final_reward -= hub_points;
-                }
-            }
-
-            // Update history stats
-            self.prev_max_val = stats.max_val;
-            self.prev_max_count = stats.max_count;
-            self.prev_pre_max_count = stats.pre_max_count;
-            self.prev_hub_count = stats.hub_count;
+            (
+                self.get_board_flat(),
+                reward,
+                game_over,
+                self.game.hints.clone(),
+            )
         } else {
-            // Invalid move penalty (if needed, though Maskable PPO handles this)
-            final_reward = -0.1;
+            // Invalid move logic (Maskable PPO will mask this usually, but handled here just in case)
+            unreachable!()
         }
-
-        // 2. Return đủ 4 món: (Board, Reward, Done, HINT)
-        (
-            self.get_board_flat(),
-            final_reward,
-            game_over,
-            self.game.hints.clone(), // <--- BỔ SUNG CÁI NÀY
-        )
     }
 
     // Cập nhật hàm Undo để trả về bộ tuple đầy đủ
@@ -376,7 +321,8 @@ impl ThreesVecEnv {
                 };
 
                 let old_score = game.score;
-                let moved = game.move_dir(dir);
+                // Fix signature mismatch
+                let (moved, _merged_ranks) = game.move_dir(dir);
                 let new_score = game.score;
                 let game_over = game.check_game_over();
 

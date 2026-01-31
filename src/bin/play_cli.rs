@@ -59,7 +59,7 @@ fn run_game() -> std::io::Result<()> {
         match ConsoleUI::get_input()? {
             InputEvent::Dir(dir) => {
                 if valid_moves.contains(&dir) {
-                    let moved = game.move_dir(dir);
+                    let (moved, _) = game.move_dir(dir);
                     if !moved {
                         message = "Move failed (unexpected).".to_string();
                     }

@@ -307,10 +307,10 @@ impl Game {
 
     // --- 2. LOGIC DI CHUYỂN CHÍNH ---
 
-    pub fn move_dir(&mut self, dir: Direction) -> bool {
-        // Check nhanh để tránh tốn công xoay board nếu không đi được
+    // Sửa kiểu trả về: (bool, Vec<u8>)
+    pub fn move_dir(&mut self, dir: Direction) -> (bool, Vec<u8>) {
         if !self.can_move(dir) {
-            return false;
+            return (false, Vec::new());
         }
 
         let rot = self.get_rotations_needed(dir);
@@ -319,7 +319,8 @@ impl Game {
         self.rotate_board(rot);
 
         // B. Xử lý logic Move & Merge
-        let (moved, moved_rows) = self.shift_board_left();
+        // Lấy danh sách merge từ đây
+        let (moved, moved_rows, merged_ranks) = self.shift_board_left();
 
         // C. Spawn gạch mới (nếu có di chuyển)
         if moved {
@@ -335,26 +336,31 @@ impl Game {
         // D. Xoay ngược lại về trạng thái gốc
         self.rotate_board(4 - rot);
 
-        moved
+        (moved, merged_ranks)
     }
 
     // --- 3. CÁC HÀM XỬ LÝ LOGIC CỐT LÕI (CORE LOGIC) ---
 
     /// Duyệt từng hàng, xử lý dồn sang trái
-    fn shift_board_left(&mut self) -> (bool, Vec<usize>) {
+    fn shift_board_left(&mut self) -> (bool, Vec<usize>, Vec<u8>) {
         let mut moved_rows = Vec::new();
+        let mut merged_ranks = Vec::new(); // <--- Danh sách thu hoạch
 
         for r in 0..4 {
-            if self.process_single_row(r) {
+            let (moved, rank_opt) = self.process_single_row(r);
+            if moved {
                 moved_rows.push(r);
+                if let Some(rank) = rank_opt {
+                    merged_ranks.push(rank);
+                }
             }
         }
 
-        (!moved_rows.is_empty(), moved_rows)
+        (!moved_rows.is_empty(), moved_rows, merged_ranks)
     }
 
     /// Xử lý logic Threes cho 1 hàng duy nhất: Chỉ merge/move cặp đầu tiên tìm thấy
-    fn process_single_row(&mut self, r: usize) -> bool {
+    fn process_single_row(&mut self, r: usize) -> (bool, Option<u8>) {
         for c in 0..3 {
             let target_val = self.board[r][c].value;
             let source_val = self.board[r][c + 1].value;
@@ -362,12 +368,12 @@ impl Game {
             if source_val == 0 { continue; }
 
             // Check merge inline cho gọn
-            let new_val = if target_val == 0 {
-                source_val
+            let (new_val, is_merge) = if target_val == 0 {
+                (source_val, false) // Chỉ là di chuyển vào ô trống
             } else if target_val + source_val == 3 {
-                3
+                (3, true) // Merge 1+2
             } else if target_val >= 3 && target_val == source_val {
-                target_val * 2
+                (target_val * 2, true) // Merge X+X
             } else {
                 continue; // Không merge được cặp này, xét cặp tiếp theo
             };
@@ -381,9 +387,16 @@ impl Game {
             }
             self.board[r][3] = Tile::new(0); // Ô cuối luôn trống
 
-            return true; // Xong việc, mỗi hàng chỉ biến đổi 1 lần
+            // Tính Rank trả về nếu là Merge
+            let merged_rank = if is_merge {
+                Some(get_rank_from_value(new_val))
+            } else {
+                None
+            };
+
+            return (true, merged_rank);
         }
-        false
+        (false, None)
     }
 
     // --- 4. CÁC HÀM HELPER & SPAWN ---
