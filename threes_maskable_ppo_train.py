@@ -38,9 +38,14 @@ class ThreesGymEnv(gym.Env):
         
         self.TILE_MAP = {v: i for i, v in enumerate([1, 2, 3, 6, 12, 24, 48, 96, 192, 384, 768, 1536, 3072])}
 
+        self.current_episode_reward = 0.0
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         raw_board, raw_hint_set = self.game.reset()
+
+        self.current_episode_reward = 0.0
+
         observation = self._process_obs(raw_board, raw_hint_set)
         return observation, {}
 
@@ -48,13 +53,17 @@ class ThreesGymEnv(gym.Env):
         next_board, reward, done, next_hint_set = self.game.step(int(action))
         
         # --- THÊM ĐOẠN NÀY ĐỂ IN LOG RA MÀN HÌNH ---
-        if done:
-            # Lấy Max Tile từ bàn cờ
-            # Lưu ý: next_board đang là list phẳng hoặc array
-            max_val = max(next_board) 
-            print(f"💀 Game Over! Reward: {reward:.2f} | MaxTile: {max_val}")
-        # -------------------------------------------
+        # THÊM DÒNG NÀY: Cộng dồn reward vào tổng
+        self.current_episode_reward += reward
         
+        # Sửa đoạn print
+        if done:
+            max_val = max(next_board)
+            
+            # In ra TỔNG REWARD (self.current_episode_reward) thay vì reward bước cuối
+            print(f"💀 Die! MaxTile: {int(max_val)} | Total Reward: {self.current_episode_reward:.2f}")
+        # -------------------------------------------
+
         # Scale reward
         reward = reward * 0.1 
         
