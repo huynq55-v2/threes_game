@@ -1,3 +1,4 @@
 /target
 *.pyc
 /tensorboard_threes
+/logs_ppo_threes_resnet

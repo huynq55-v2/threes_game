@@ -190,10 +190,10 @@ if __name__ == "__main__":
     model = MaskablePPO(
         "MultiInputPolicy",
         vec_env,
-        learning_rate=2.5e-4,   
+        learning_rate=1e-4,   
         n_steps=2048,           
         batch_size=1024,        
-        n_epochs=10,            
+        n_epochs=4,            
         gamma=0.99,             
         gae_lambda=0.95,        
         clip_range=0.2,
