@@ -36,7 +36,7 @@ class ThreesGymEnv(gym.Env):
             "hint": spaces.Box(low=0, high=1, shape=(13,), dtype=np.float32),
         })
         
-        self.TILE_MAP = {v: i for i, v in enumerate([1, 2, 3, 6, 12, 24, 48, 96, 192, 384, 768, 1536, 3072])}
+        self.TILE_MAP = {v: i for i, v in enumerate([1, 2, 3, 6, 12, 24, 48, 96, 192, 384, 768, 1536, 3072, 6144])}
 
         self.current_episode_reward = 0.0
 
@@ -182,6 +182,16 @@ class ThreesResNetExtractor(BaseFeaturesExtractor):
         combined = torch.cat((board_feat, hint_feat), dim=1)
         return self.fusion(combined)
 
+import glob
+
+def get_latest_checkpoint(checkpoint_dir):
+    # Tìm tất cả các file có đuôi .zip trong thư mục
+    list_of_files = glob.glob(os.path.join(checkpoint_dir, "*.zip"))
+    if not list_of_files:
+        return None
+    # Trả về file có thời gian tạo (hoặc sửa đổi) mới nhất
+    return max(list_of_files, key=os.path.getctime)
+
 # ==========================================
 # PHẦN 3: MAIN LOOP
 # ==========================================
@@ -191,39 +201,53 @@ if __name__ == "__main__":
     print(f"🚀 Đang khởi tạo {NUM_CPU} môi trường song song...")
     vec_env = SubprocVecEnv([make_env for _ in range(NUM_CPU)])
 
-    policy_kwargs = dict(
-        features_extractor_class=ThreesResNetExtractor,
-        features_extractor_kwargs=dict(features_dim=512),
-        net_arch=dict(pi=[256, 256], vf=[256, 256]),
-        activation_fn=nn.GELU,
-    )
+    # --- TỰ ĐỘNG TÌM CHECKPOINT ---
+    latest_checkpoint = get_latest_checkpoint(SAVE_DIR)
+    
+    # 1. Khởi tạo/Load Model
+    if latest_checkpoint:
+        print(f"♻️  Phát hiện 'di cốt' cũ: {latest_checkpoint}")
+        model = MaskablePPO.load(latest_checkpoint, env=vec_env, device="cpu")
+    else:
+        print("🔥 Khởi tạo model mới từ đầu...")
+        policy_kwargs = dict(
+            features_extractor_class=ThreesResNetExtractor,
+            features_extractor_kwargs=dict(features_dim=512),
+            net_arch=dict(pi=[256, 256], vf=[256, 256]),
+            activation_fn=nn.GELU,
+        )
+        model = MaskablePPO(
+            "MultiInputPolicy",
+            vec_env,
+            learning_rate=1e-4,
+            n_steps=16384,
+            batch_size=1024,
+            n_epochs=10,
+            gamma=0.999,
+            policy_kwargs=policy_kwargs,
+            tensorboard_log="./tensorboard_threes/",
+            verbose=1,
+            device="cpu"
+        )
 
-    print("🔥 Khởi tạo Maskable PPO với ResNet Backbone...")
-    model = MaskablePPO(
-        "MultiInputPolicy",
-        vec_env,
-        learning_rate=1e-4,   
-        n_steps=16384,           
-        batch_size=1024,        
-        n_epochs=10,            
-        gamma=0.999,             
-        gae_lambda=0.95,        
-        clip_range=0.2,
-        ent_coef=0.01,          
-        vf_coef=0.5,
-        max_grad_norm=0.5,
-        policy_kwargs=policy_kwargs,
-        tensorboard_log="./tensorboard_threes/",
-        verbose=1,
-        device="cpu"            
-    )
+    # --- CẤU HÌNH CALLBACK (SỬA Ở ĐÂY) ---
+    # Để save sau mỗi 100k tổng steps, ta chia cho NUM_CPU
+    actual_save_freq = 100_000 // NUM_CPU 
 
     checkpoint_callback = CheckpointCallback(
-        save_freq=100_000, 
+        save_freq=actual_save_freq, 
         save_path=SAVE_DIR,
         name_prefix="ppo_resnet"
     )
 
-    model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=checkpoint_callback)
+    # 2. Bắt đầu học
+    # reset_num_timesteps=False để log Tensorboard chạy tiếp tục, không quay về 0
+    model.learn(
+        total_timesteps=TOTAL_TIMESTEPS, 
+        callback=checkpoint_callback,
+        reset_num_timesteps=False 
+    )
+
+    # 3. Save chốt hạ
     model.save("threes_resnet_final")
     print("✅ Training Hoàn tất!")

@@ -247,7 +247,7 @@ impl Game {
                 // FaceLayout.FaceData faceData = ...
                 let r_idx = rank.saturating_sub(1).saturating_sub(i);
                 let clamped_rank = r_idx.clamp(1, 11);
-                let val_to_show = get_value_from_rank(clamped_rank);
+                let val_to_show = get_value_from_rank(clamped_rank + 1);
                 hints.push(val_to_show);
             }
         }
@@ -401,23 +401,39 @@ impl Game {
 
     // --- 4. CÁC HÀM HELPER & SPAWN ---
     
-    /// Đổi tên cho rõ nghĩa: Spawn vào cuối hàng (Cột 3)
-    fn do_spawn_on_row_ends(&mut self, moved_rows: &[usize]) {
+    // Hàm 1: Quyết định giá trị thực tế sẽ rơi xuống dựa trên future_value (Master Tile)
+    pub fn get_actual_spawn_value(&self) -> u32 {
+        let mut rng = rng();
+        let val = self.future_value;
+
+        if val > 3 {
+            let rank = get_rank_from_value(val);
+            // Re-roll logic: Lấy trong khoảng [rank-2, rank]
+            let min_r = 2.max(rank.saturating_sub(2));
+            let actual_rank = rng.random_range(min_r..=rank);
+            get_value_from_rank(actual_rank)
+        } else {
+            val
+        }
+    }
+
+    // Hàm 2: Thực thi việc đặt quân bài lên board
+    pub fn spawn_at(&mut self, row: usize, col: usize, val: u32) {
+        self.board[row][col] = Tile::new(val);
+    }
+
+    // Hàm wrapper cũ (đã được làm sạch)
+    pub fn do_spawn_on_row_ends(&mut self, moved_rows: &[usize]) {
         if moved_rows.is_empty() { return; }
 
         let mut rng = rng();
         let target_row = *moved_rows.choose(&mut rng).unwrap();
-
-        // Logic tính giá trị spawn (giữ nguyên logic Re-roll Bonus)
-        let mut val = self.future_value;
-        if val > 3 {
-            let rank = get_rank_from_value(val);
-            let min_r = 2.max(rank.saturating_sub(2));
-            let actual_rank = rng.random_range(min_r..=rank);
-            val = get_value_from_rank(actual_rank);
-        }
-
-        self.board[target_row][3] = Tile::new(val);
+        
+        // Gọi hàm lấy giá trị
+        let val = self.get_actual_spawn_value();
+        
+        // Gọi hàm thực thi (mặc định spawn ở cột cuối - cột 3)
+        self.spawn_at(target_row, 3, val);
     }
 
     // Helper: Lấy số lần xoay cần thiết
@@ -598,7 +614,7 @@ mod tests {
         let game = Game::new_with_board(board, num_move);
 
         // 4. Verify results
-        let valid_a = vec![3, 6, 12];
+        let valid_a = vec![12, 24, 48];
         let valid_b = vec![6, 12, 24];
 
         assert!(
@@ -625,5 +641,44 @@ mod tests {
         let game = Game::new_with_board(board, 10);
         let can = game.can_move(Direction::Down);
         assert!(can, "Should be able to move Down");
+    }
+
+    #[test]
+    fn test_spawn_value_always_consistent_with_hints() {
+        let mut rng = rng();
+
+        // Chạy 100 kịch bản bàn cờ khác nhau
+        for _ in 0..100 {
+            // 1. Random một Rank từ 1 đến 12 để đặt lên bàn
+            let random_rank = rng.random_range(1..=12);
+            let tile_value = get_value_from_rank(random_rank);
+            
+            let mut board = [[Tile::new(0); 4]; 4];
+            board[0][0] = Tile::new(tile_value);
+
+            // 2. Tạo game (num_move > 21 để kích hoạt khả năng bốc Bonus)
+            // future_value sẽ tự động được tính toán bên trong new_with_board
+            let mut game = Game::new_with_board(board, 25);
+
+            // 3. Lấy danh sách Hint mà AI nhìn thấy
+            let hints = game.predict_future();
+            
+            // 4. Kiểm tra 100 lần spawn thực tế cho mỗi kịch bản
+            for _ in 0..100 {
+                let actual_val = game.get_actual_spawn_value();
+                
+                // Assert: Giá trị thực tế RƠI xuống PHẢI nằm trong danh sách ĐÃ HỨA (Hints)
+                assert!(
+                    hints.contains(&actual_val),
+                    "\n[LỖI MISMATCH]\n\
+                     Board Max Rank: {} (Value: {})\n\
+                     Future Master Value (Hidden): {}\n\
+                     Hints Displayed: {:?}\n\
+                     Actual Spawned: {}\n",
+                    random_rank, tile_value, game.future_value, hints, actual_val
+                );
+            }
+        }
+        println!("✅ Đã kiểm tra 10.000 lần spawn, tất cả đều khớp với Hint!");
     }
 }
