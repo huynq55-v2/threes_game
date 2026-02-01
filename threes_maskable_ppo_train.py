@@ -96,7 +96,9 @@ class ThreesGymEnv(gym.Env):
         for h in hint_set:
             if h in self.TILE_MAP:
                 hint_vec[self.TILE_MAP[h]] = 1.0
-        logger.info(f"Hint: {hint_set} -> {hint_vec.astype(int)}")
+        
+        if len(hint_set) > 1:
+            logger.info(f"Hint: {hint_set} -> {hint_vec.astype(int)}")
                 
         return {"board": board_final, "hint": hint_vec}
 
