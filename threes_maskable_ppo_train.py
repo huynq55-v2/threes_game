@@ -13,6 +13,12 @@ from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.monitor import Monitor
 import threes_rs  # Thư viện Rust của bạn
 
+import logging
+
+# Cấu hình ở đầu file
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+logger = logging.getLogger(__name__)
+
 # --- CẤU HÌNH ---
 NUM_CPU = 8             
 TOTAL_TIMESTEPS = 20_000_000 
@@ -90,6 +96,7 @@ class ThreesGymEnv(gym.Env):
         for h in hint_set:
             if h in self.TILE_MAP:
                 hint_vec[self.TILE_MAP[h]] = 1.0
+        logger.info(f"Hint: {hint_set} -> {hint_vec.astype(int)}")
                 
         return {"board": board_final, "hint": hint_vec}
 
@@ -232,10 +239,11 @@ if __name__ == "__main__":
         model = MaskablePPO(
             "MultiInputPolicy",
             vec_env,
-            learning_rate=1e-4,
+            learning_rate=2e-4,
             n_steps=16384,
             batch_size=1024,
             n_epochs=10,
+            ent_coef=0.02,
             gamma=0.999,
             policy_kwargs=policy_kwargs,
             tensorboard_log="./tensorboard_threes/",
