@@ -13,11 +13,6 @@ from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.monitor import Monitor
 import threes_rs  # Thư viện Rust của bạn
 
-# --- CẤU HÌNH ---
-NUM_CPU = 8             
-TOTAL_TIMESTEPS = 20_000_000 
-SAVE_DIR = "./logs_ppo_threes_resnet/"
-
 # ==========================================
 # PHẦN 1: MÔI TRƯỜNG (WRAPPER)
 # ==========================================
@@ -33,7 +28,7 @@ class ThreesGymEnv(gym.Env):
         
         self.observation_space = spaces.Dict({
             "board": spaces.Box(low=0, high=15, shape=(1, 4, 4), dtype=np.float32),
-            "hint": spaces.Box(low=0, high=1, shape=(14,), dtype=np.float32),
+            "hint": spaces.Box(low=0, high=1, shape=(13,), dtype=np.float32),
         })
         
         self.TILE_MAP = {v: i for i, v in enumerate([1, 2, 3, 6, 12, 24, 48, 96, 192, 384, 768, 1536, 3072, 6144])}
@@ -86,7 +81,7 @@ class ThreesGymEnv(gym.Env):
         board_final = ranks.reshape(1, 4, 4)
         
         # 2. Hint
-        hint_vec = np.zeros((14,), dtype=np.float32)
+        hint_vec = np.zeros((13,), dtype=np.float32)
         for h in hint_set:
             if h in self.TILE_MAP:
                 hint_vec[self.TILE_MAP[h]] = 1.0
@@ -182,85 +177,60 @@ class ThreesResNetExtractor(BaseFeaturesExtractor):
         combined = torch.cat((board_feat, hint_feat), dim=1)
         return self.fusion(combined)
 
-import glob
+def surgery_on_checkpoint(old_path, new_path, env):
+    # --- ĐỊNH NGHĨA LẠI POLICY_KWARGS CHO CHẮC CHẮN ---
+    # (Phải trùng khớp với kiến trúc bác đã dùng để train 9.3M steps)
+    policy_kwargs = dict(
+        features_extractor_class=ThreesResNetExtractor,
+        features_extractor_kwargs=dict(features_dim=512),
+        net_arch=dict(pi=[256, 256], vf=[256, 256]),
+        activation_fn=nn.GELU,
+    )
 
-def get_latest_checkpoint(checkpoint_dir):
-    # Tìm tất cả các file có đuôi .zip trong thư mục
-    list_of_files = glob.glob(os.path.join(checkpoint_dir, "*.zip"))
-    if not list_of_files:
-        return None
-    # Trả về file có thời gian tạo (hoặc sửa đổi) mới nhất
-    return max(list_of_files, key=os.path.getctime)
-
-# ==========================================
-# PHẦN 3: MAIN LOOP
-# ==========================================
-if __name__ == "__main__":
-    os.makedirs(SAVE_DIR, exist_ok=True)
-
-    print(f"🚀 Đang khởi tạo {NUM_CPU} môi trường song song...")
-    vec_env = SubprocVecEnv([make_env for _ in range(NUM_CPU)])
-
-    # --- TỰ ĐỘNG TÌM CHECKPOINT ---
-    latest_checkpoint = get_latest_checkpoint(SAVE_DIR)
+    print("🏥 Bắt đầu ca phẫu thuật...")
     
-    # 1. Khởi tạo/Load Model
-    if latest_checkpoint:
-        print(f"♻️  Phát hiện model cũ: {latest_checkpoint}")
-        print("🚀 Đang hồi sinh model với cấu hình 14 input...")
-        
-        # Ép model phải nhận observation_space mới từ vec_env
-        custom_objects = {
-            "observation_space": vec_env.observation_space,
-            "action_space": vec_env.action_space
-        }
-        
-        model = MaskablePPO.load(
-            latest_checkpoint, 
-            env=vec_env, 
-            device="cpu", 
-            custom_objects=custom_objects
-        )
-    else:
-        print("🔥 Khởi tạo model mới từ đầu...")
-        policy_kwargs = dict(
-            features_extractor_class=ThreesResNetExtractor,
-            features_extractor_kwargs=dict(features_dim=512),
-            net_arch=dict(pi=[256, 256], vf=[256, 256]),
-            activation_fn=nn.GELU,
-        )
-        model = MaskablePPO(
-            "MultiInputPolicy",
-            vec_env,
-            learning_rate=1e-4,
-            n_steps=16384,
-            batch_size=1024,
-            n_epochs=10,
-            gamma=0.999,
-            policy_kwargs=policy_kwargs,
-            tensorboard_log="./tensorboard_threes/",
-            verbose=1,
-            device="cpu"
-        )
-
-    # --- CẤU HÌNH CALLBACK (SỬA Ở ĐÂY) ---
-    # Để save sau mỗi 100k tổng steps, ta chia cho NUM_CPU
-    actual_save_freq = 100_000 // NUM_CPU 
-
-    checkpoint_callback = CheckpointCallback(
-        save_freq=actual_save_freq, 
-        save_path=SAVE_DIR,
-        name_prefix="ppo_resnet"
+    # 1. Khởi tạo model mới với kiến trúc 14 input (đã sửa trong Env của bác)
+    new_model = MaskablePPO(
+        "MultiInputPolicy",
+        env,
+        policy_kwargs=policy_kwargs, # Phải đảm bảo policy_kwargs đã update features_dim
+        verbose=1
     )
 
-    # 2. Bắt đầu học
-    # reset_num_timesteps=False để log Tensorboard chạy tiếp tục, không quay về 0
-    model.learn(
-        total_timesteps=TOTAL_TIMESTEPS, 
-        callback=checkpoint_callback,
-        reset_num_timesteps=False 
-    )
+    # 2. Load trọng số từ model cũ
+    # Lưu ý: load với device="cpu" cho an toàn
+    old_model = MaskablePPO.load(old_path, device="cpu")
+    old_params = old_model.policy.state_dict()
+    new_params = new_model.policy.state_dict()
 
-    # 3. Save chốt hạ
-    model.save("threes_resnet_final")
-    print("✅ Training Hoàn tất!")
+    print("🧠 Đang chuyển giao ký ức...")
+    for key in new_params.keys():
+        if key in old_params:
+            if new_params[key].shape == old_params[key].shape:
+                # Nếu shape khớp (phần ResNet, phần Fusion), chép nguyên sang
+                new_params[key].copy_(old_params[key])
+            else:
+                # Nếu lệch shape (chính là lớp Linear đầu tiên của Hint)
+                print(f"✂️  Đang khâu vết mổ tại: {key}")
+                old_weight = old_params[key] # Shape [64, 13]
+                # Chép 13 cột cũ vào 13 cột đầu của model mới [64, 14]
+                new_params[key][:, :13].copy_(old_weight)
+                # Cột thứ 14 để mặc định (init là 0 hoặc random nhỏ)
+        else:
+            print(f"⚠️  Phát hiện vùng não mới: {key}")
+
+    # 3. Cập nhật trọng số mới vào model mới
+    new_model.policy.load_state_dict(new_params)
+    
+    # 4. Lưu lại bản "hồi sinh"
+    new_model.save(new_path)
+    print(f"✅ Phẫu thuật thành công! File mới đã sẵn sàng tại: {new_path}")
+
+# --- THỰC THI ---
+if __name__ == "__main__":
+    # Nhớ khởi tạo env mới với shape 14 trước khi gọi hàm này
+    test_env = make_env() 
+    old_ckpt = "./logs_ppo_threes_resnet/ppo_resnet_9600000_steps.zip"
+    new_ckpt = "./logs_ppo_threes_resnet/ppo_resnet_9600000_v2_14input.zip"
+    
+    surgery_on_checkpoint(old_ckpt, new_ckpt, test_env)
