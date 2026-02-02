@@ -9,6 +9,45 @@ import gymnasium as gym
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 
+def predict_with_temperature(model, obs, action_masks, temperature=1.5):
+    """
+    Dự đoán nước đi có áp dụng 'thuốc' (Temperature Scaling) tạm thời.
+    """
+    # --- FIX LỖI: CHUYỂN ĐỔI NUMPY -> TENSOR ---
+    # obs là dict {'board': numpy, 'hint': numpy}
+    # Cần chuyển sang Tensor và đưa vào thiết bị (CPU/GPU) của model
+    obs_tensor = {}
+    for key, value in obs.items():
+        obs_tensor[key] = torch.as_tensor(value).to(model.device)
+    # -------------------------------------------
+
+    with torch.no_grad():
+        # 1. Trích xuất features (Input giờ đã là Tensor chuẩn)
+        features = model.policy.extract_features(obs_tensor)
+        
+        # 2. Đưa qua mạng MLP để lấy Logits
+        latent_pi, _ = model.policy.mlp_extractor(features)
+        logits = model.policy.action_net(latent_pi)
+        
+        # 3. Áp dụng Mask
+        # action_masks là numpy, cần chuyển sang tensor
+        masks_tensor = torch.as_tensor(action_masks, device=model.device)
+        
+        # Gán giá trị âm cực lớn cho nước đi bị cấm
+        HUGE_NEG = -1e8
+        logits[~masks_tensor.bool()] = HUGE_NEG
+        
+        # 4. UỐNG THUỐC (Chia cho Temperature)
+        # T > 1: San phẳng (Tăng tính ngẫu nhiên/khám phá)
+        # T < 1: Làm nhọn (Tăng tính tập trung/cực đoan)
+        logits = logits / temperature
+        
+        # 5. Lấy mẫu ngẫu nhiên (Stochastic sampling)
+        probs = F.softmax(logits, dim=-1)
+        actions = torch.multinomial(probs, num_samples=1)
+        
+    return actions.cpu().numpy().flatten()
+
 # --- IMPORT HOẶC ĐỊNH NGHĨA LẠI KIẾN TRÚC MẠNG CỦA BẠN ---
 # (Để script này chạy độc lập, tôi paste lại class của bạn vào đây)
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -101,7 +140,9 @@ def generate_data(model, env, n_games=1000):
     
     while len(finished_episodes) < n_games:
         # Truyền mask đã có vào predict
-        actions, _ = model.predict(obs, action_masks=current_masks, deterministic=False)
+        # actions, _ = model.predict(obs, action_masks=current_masks, deterministic=False)
+
+        actions = predict_with_temperature(model, obs, current_masks, temperature=1.5)
         
         # Step môi trường
         next_obs, rewards, dones, infos = env.step(actions)
@@ -157,8 +198,8 @@ def generate_data(model, env, n_games=1000):
 # --- PHẦN 3: MAIN FLOW ---
 def main():
     # 1. Cấu hình
-    MODEL_PATH = "logs_ppo_threes_resnet/ppo_resnet_14200000_steps.zip" # Đường dẫn model cũ
-    NEW_MODEL_PATH = "logs_ppo_threes_resnet/ppo_resnet_EVOLVED.zip"
+    MODEL_PATH = "logs_ppo_threes_resnet/ppo_resnet_EVOLVED.zip" # Đường dẫn model cũ
+    NEW_MODEL_PATH = "logs_ppo_threes_resnet/ppo_resnet_EVOLVED_new.zip"
     
     N_GAMES = 100000      # Số ván chơi thử (Nên để 10k - 100k)
     TOP_PERCENT = 0.05   # Lấy top 5% (Elite)
