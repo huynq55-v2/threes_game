@@ -133,8 +133,13 @@ impl Game {
         for r in 0..4 {
             for c in 0..4 {
                 let rank = self.board[r][c].rank();
-                if rank > max_rank {
-                    max_rank = rank;
+                
+                // BỎ QUA các rank đặc biệt 21 (số 1) và 22 (số 2)
+                // Chỉ tính những rank thuộc chuỗi nén (3, 6, 12... tương ứng rank 1, 2, 3...)
+                if rank != 21 && rank != 22 {
+                    if rank > max_rank {
+                        max_rank = rank;
+                    }
                 }
             }
         }

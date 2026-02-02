@@ -46,6 +46,8 @@ class ThreesGymEnv(gym.Env):
 
         self.current_episode_reward = 0.0
 
+        self.bonus_hint_count = 0
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         raw_board, raw_hint_set = self.game.reset()
@@ -53,22 +55,29 @@ class ThreesGymEnv(gym.Env):
         self.current_episode_reward = 0.0
 
         observation = self._process_obs(raw_board, raw_hint_set)
+
+        self.bonus_hint_count = 0
+
         return observation, {}
 
     def step(self, action):
         next_board, reward, done, next_hint_set = self.game.step(int(action))
         
-        # --- THÊM ĐOẠN NÀY ĐỂ IN LOG RA MÀN HÌNH ---
-        # THÊM DÒNG NÀY: Cộng dồn reward vào tổng
+        # 1. Cộng dồn reward
         self.current_episode_reward += reward
+
+        # 2. Đếm số lần Hint có nhiều hơn 1 con số (Bonus Hint)
+        # Trong Threes, hint > 1 con số (ví dụ [6, 12]) là quân Bonus
+        if len(next_hint_set) > 1:
+            self.bonus_hint_count += 1
         
-        # Sửa đoạn print
+        # 3. Log khi kết thúc ván
         if done:
             max_val = max(next_board)
-            
-            # In ra TỔNG REWARD (self.current_episode_reward) thay vì reward bước cuối
-            print(f"💀 Die! MaxTile: {int(max_val)} | Total Reward: {self.current_episode_reward:.2f}")
-        # -------------------------------------------
+            # In thêm thông tin Bonus Hints
+            print(f"💀 Die! MaxTile: {int(max_val)} | "
+                  f"Total Reward: {self.current_episode_reward:.2f} | "
+                  f"Bonus Hints: {self.bonus_hint_count}")
         
         observation = self._process_obs(next_board, next_hint_set)
         return observation, reward, done, False, {}
@@ -100,9 +109,6 @@ class ThreesGymEnv(gym.Env):
         for h in hint_set:
             if h in self.TILE_MAP:
                 hint_vec[self.TILE_MAP[h]] = 1.0
-        
-        if len(hint_set) > 1:
-            logger.info(f"Hint: {hint_set} -> {hint_vec.astype(int)}")
                 
         return {"board": one_hot, "hint": hint_vec}
 
