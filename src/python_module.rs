@@ -62,8 +62,6 @@ impl ThreesEnv {
         };
 
         // 2. Init Reward & Scale
-        // Giả sử scale để normalize reward về khoảng nhỏ cho PPO
-        let scale = 0.1;
         let mut reward = 0.0;
 
         // 3. Thực hiện Move
@@ -94,7 +92,7 @@ impl ThreesEnv {
                             .calculate_merge_reward(rank, &local_board_ranks);
                     }
                 }
-                reward += rarity_reward * scale;
+                reward += rarity_reward;
             }
 
             (

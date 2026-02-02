@@ -1,6 +1,7 @@
 import os
 import sys
 import copy
+import time
 import numpy as np
 import torch
 import colorama
@@ -17,7 +18,7 @@ from sb3_contrib import MaskablePPO
 
 colorama.init(autoreset=True)
 
-# --- PHẦN 1: INPUT KEYBOARD ---
+# --- PHẦN 1: INPUT KEYBOARD & CHECKING ---
 class _Getch:
     def __init__(self):
         try: self.impl = _GetchWindows()
@@ -57,30 +58,32 @@ class _GetchWindows:
             if ch == b'M': return 'RIGHT'
         return ch.decode('utf-8')
 
+def kbhit():
+    if os.name == 'nt':
+        import msvcrt
+        return msvcrt.kbhit()
+    else:
+        import select
+        dr, dw, de = select.select([sys.stdin], [], [], 0)
+        return dr != []
+
 get_key = _Getch()
 
 # --- PHẦN 2: TIME MACHINE ---
 class TimeMachine:
     def __init__(self):
         self.timeline = []
-        self.cursor = -1
 
     def save(self, env, obs):
-        # Rust module handles history automatically in step()
         pass
 
     def undo(self, env):
         try:
-            # env.unwrapped.game is the Rust ThreesEnv object
-            # It returns (board_flat, reward, done, hint_list)
             res = env.unwrapped.game.undo()
             board, _, _, hint = res
-            
-            # Reconstruct observation using helper in ThreesGymEnv
             obs = env.unwrapped._process_obs(board, hint)
             return env, obs
-        except Exception as e:
-            # e.g. history empty or panic
+        except Exception:
             return None, None
 
     def redo(self, env):
@@ -89,7 +92,7 @@ class TimeMachine:
             board, _, _, hint = res
             obs = env.unwrapped._process_obs(board, hint)
             return env, obs
-        except Exception as e:
+        except Exception:
             return None, None
 
 # --- PHẦN 3: AI CHECK ---
@@ -105,24 +108,13 @@ def get_ai_evaluation(model, obs, action_masks, user_action):
         lower_mass = np.sum(masked_probs[masked_probs <= user_prob])
         return lower_mass < 0.5, lower_mass
 
-# --- PHẦN 4: UI MỚI (SOLID BLOCK) ---
+# --- PHẦN 4: UI MỚI (FIXED NEXT TILE) ---
 
 BG_STYLES = {
-    0:  Back.BLACK,
-    1:  Back.CYAN,
-    2:  Back.RED,
-    3:  Back.WHITE,
-    6:  Back.WHITE,
-    12: Back.WHITE,
-    24: Back.WHITE,
-    48: Back.YELLOW,             
-    96: Back.YELLOW,
-    192: Back.YELLOW,
-    384: Back.BLUE,
-    768: Back.MAGENTA,
-    1536: Back.GREEN,
-    3072: Back.GREEN,
-    6144: Back.BLACK
+    0:  Back.BLACK, 1:  Back.CYAN, 2:  Back.RED, 3:  Back.WHITE,
+    6:  Back.WHITE, 12: Back.WHITE, 24: Back.WHITE, 48: Back.YELLOW,             
+    96: Back.YELLOW, 192: Back.YELLOW, 384: Back.BLUE, 768: Back.MAGENTA,
+    1536: Back.GREEN, 3072: Back.GREEN, 6144: Back.BLACK
 }
 
 FG_STYLES = {
@@ -136,47 +128,65 @@ def get_style(val):
     else: fg = FG_STYLES.get(val, Fore.WHITE)
     return bg, fg
 
-# --- UI DRAWING (Đã sửa để nhận đúng tham số) ---
-def draw_ui(env, obs, message=""):
+def draw_ui(env, obs, message="", is_autoplay=False):
     os.system('cls' if os.name == 'nt' else 'clear')
     
-    # Lấy board và hint trực tiếp từ env và obs
     board = np.array(env.unwrapped.game.get_board_flat()).reshape(4,4)
-    hint_idx = np.argmax(obs['hint'])
-    TILE_MAP_INV = {i: v for v, i in env.unwrapped.TILE_MAP.items()}
-    hint_val = TILE_MAP_INV.get(hint_idx, 0)
     
+    # --- BUG FIX SỐ 4: HIỂN THỊ HẾT CÁC HINT ---
+    # Lấy map từ index ngược ra value
+    TILE_MAP_INV = {i: v for v, i in env.unwrapped.TILE_MAP.items()}
+    
+    # Tìm tất cả các index có giá trị > 0 trong vector hint
+    hint_indices = np.where(obs['hint'] > 0.5)[0]
+    
+    # Convert sang list các giá trị thật
+    hint_values = [TILE_MAP_INV.get(idx, 0) for idx in hint_indices]
+    hint_values.sort() # Sắp xếp cho đẹp
+    
+    # Tạo chuỗi hiển thị (ví dụ: "6 | 12")
+    if not hint_values:
+        hint_str = "?"
+        bg_h, fg_h = Back.BLACK, Fore.WHITE
+    else:
+        hint_str = " | ".join(str(v) for v in hint_values)
+        # Lấy màu của con đầu tiên để làm nền đại diện
+        bg_h, fg_h = get_style(hint_values[0])
+    # -------------------------------------------
+
     print(f"{Style.BRIGHT}=== THREES! AI GYM (IRON DISCIPLINE) ==={Style.RESET_ALL}\n")
 
-    tile_width = 6 
+    tile_width = 8 # Tăng width lên chút để hiển thị số to
     for row in board:
-        # Line 1, 2, 3: Vẽ khối màu solid
         for line_type in range(3):
             for val in row:
-                bg, fg = get_style(val) # Hàm get_style bạn đã định nghĩa
-                if line_type == 1: # Dòng giữa có số
+                bg, fg = get_style(val)
+                if line_type == 1:
                     s_val = "." if val == 0 else str(val)
                     print(f"{bg}{fg}{s_val:^{tile_width}}{Style.RESET_ALL}", end=" ")
-                else: # Dòng đệm trên/dưới
+                else:
                     print(f"{bg}{' ' * tile_width}{Style.RESET_ALL}", end=" ")
             print()
         print() 
 
-    # Vẽ Hint
-    bg_h, fg_h = get_style(hint_val)
-    hint_str = str(hint_val) if hint_val > 0 else "?"
+    # Vẽ Hint Box rộng hơn chút để chứa nhiều số
+    hint_width = max(tile_width, len(hint_str) + 2)
     print(f"Next Tile:")
-    print(f"{bg_h}{' ' * tile_width}{Style.RESET_ALL}")
-    print(f"{bg_h}{fg_h}{hint_str:^{tile_width}}{Style.RESET_ALL}")
-    print(f"{bg_h}{' ' * tile_width}{Style.RESET_ALL}")
+    print(f"{bg_h}{' ' * hint_width}{Style.RESET_ALL}")
+    print(f"{bg_h}{fg_h}{hint_str:^{hint_width}}{Style.RESET_ALL}")
+    print(f"{bg_h}{' ' * hint_width}{Style.RESET_ALL}")
     
-    print(f"\n{Fore.YELLOW}Arrows{Style.RESET_ALL}: Move | {Fore.GREEN}U{Style.RESET_ALL}: Undo | {Fore.RED}Q{Style.RESET_ALL}: Quit")
+    status_ai = f"{Back.GREEN} ON {Style.RESET_ALL}" if is_autoplay else f"{Back.RED} OFF {Style.RESET_ALL}"
+
+    print(f"\n{Fore.YELLOW}Arrows{Style.RESET_ALL}: Move | {Fore.GREEN}U{Style.RESET_ALL}: Undo | {Fore.RED}R{Style.RESET_ALL}: Restart")
+    print(f"{Fore.CYAN}P{Style.RESET_ALL}: AI Autoplay [{status_ai}]")
+    
     if message: print(f"\n{message}")
     sys.stdout.flush()
 
 # --- PHẦN 5: MAIN ---
 def main():
-    model_path = "./logs_ppo_threes_resnet/ppo_resnet_6400000_steps.zip"
+    model_path = "./logs_ppo_threes_resnet/ppo_resnet_14200000_steps.zip"
     try:
         model = MaskablePPO.load(model_path)
     except:
@@ -185,20 +195,84 @@ def main():
 
     env = make_env()
     obs, _ = env.reset()
-    tm = TimeMachine() # Sử dụng TimeMachine đã fix ở các version trước
+    tm = TimeMachine()
     tm.save(env, obs)
     
     msg = ""
+    ai_autoplay = False
+    
+    # Delay cho AI (giây) - Fix số 3
+    AI_DELAY = 0.15 
 
     while True:
-        # GỌI ĐÚNG THAM SỐ: Chỉ truyền env, obs và msg
-        draw_ui(env, obs, msg)
+        draw_ui(env, obs, msg, is_autoplay=ai_autoplay)
         msg = ""
 
-        key = get_key()
+        # --- MODE 1: AI AUTOPLAY ---
+        if ai_autoplay:
+            # Check phím chen ngang (Non-blocking)
+            if kbhit():
+                key = get_key()
+                if key in ['p', 'P']:
+                    ai_autoplay = False
+                    msg = f"{Fore.YELLOW}Đã tắt AI Autoplay."
+                    continue 
+                if key in ['q', 'Q']: return
+                if key in ['r', 'R']: # Restart ngay cả khi AI đang chạy
+                     obs, _ = env.reset()
+                     tm = TimeMachine()
+                     tm.save(env, obs)
+                     msg = f"{Fore.GREEN}Đã Restart Game Mới!"
+                     continue
+
+            # AI Logic
+            masks = env.unwrapped.valid_action_mask()
+            action, _ = model.predict(obs, action_masks=masks, deterministic=True)
+            
+            obs, _, done, _, _ = env.step(action)
+            tm.save(env, obs)
+            
+            if done:
+                ai_autoplay = False # Tự tắt AI khi chết
+                draw_ui(env, obs, f"{Back.RED} GAME OVER! {Style.RESET_ALL}", is_autoplay=False)
+                print("\nBấm R để Restart, U để Undo, Q để Quit.")
+                
+                # Loop chờ xử lý sau khi chết
+                while True:
+                    k = get_key().lower()
+                    if k == 'q': return
+                    if k == 'u': 
+                        e, o = tm.undo(env)
+                        if e: obs = o; break
+                    if k == 'r': # Fix số 2: Restart sau Game Over
+                        obs, _ = env.reset()
+                        tm = TimeMachine()
+                        tm.save(env, obs)
+                        break
+                continue # Quay lại vòng lặp chính (với board mới hoặc undo)
+
+            time.sleep(AI_DELAY) # Fix số 3: Delay
+            continue # BUG FIX SỐ 1: Continue ngay để AI chạy tiếp, không rơi xuống phần 'get_key' chặn ở dưới
+
+        # --- MODE 2: MANUAL PLAYER (Blocking) ---
+        
+        key = get_key() # Chờ phím ở đây
+        
         if key in ['q', 'Q']: break
         
-        # Xử lý Undo
+        # BUG FIX SỐ 1: Bấm P là loop lại ngay để lọt vào block if ai_autoplay ở trên
+        if key in ['p', 'P']: 
+            ai_autoplay = True
+            continue 
+
+        # Fix số 2: Restart thủ công
+        if key in ['r', 'R']:
+            obs, _ = env.reset()
+            tm = TimeMachine()
+            tm.save(env, obs)
+            msg = f"{Fore.GREEN}Đã Restart Game Mới!"
+            continue
+
         if key in ['u', 'U']:
             e, o = tm.undo(env)
             if e:
@@ -206,7 +280,6 @@ def main():
                 msg = f"{Fore.GREEN}Đã Undo."
             continue
 
-        # Xử lý Move
         action_map = {'UP': 0, 'DOWN': 1, 'LEFT': 2, 'RIGHT': 3}
         if key in action_map:
             action = action_map[key]
@@ -216,29 +289,31 @@ def main():
                 msg = f"{Fore.RED}Bị tường chặn!"
                 continue
 
-            # --- LOGIC KIỂM DUYỆT CỦA AI ---
-            # Chỉ kích hoạt khi đã có số >= 48
+            # AI Advisor check
             current_max = max(env.unwrapped.game.get_board_flat())
             if current_max >= 12:
                 is_weak, score = get_ai_evaluation(model, obs, masks, action)
                 if is_weak:
-                    # KHÔNG CHO ĐI: Chỉ hiện thông báo và bắt chọn lại
-                    msg = f"{Back.RED}{Fore.WHITE} WEAK MOVE ({key})! ({score:.2f}) {Style.RESET_ALL} {Fore.YELLOW}AI chặn. Thử hướng khác!{Style.RESET_ALL}"
+                    msg = f"{Back.RED}{Fore.WHITE} WEAK MOVE ({key})! ({score:.2f}) {Style.RESET_ALL} {Fore.YELLOW}AI chặn.{Style.RESET_ALL}"
                     continue
 
-            # Thực thi nếu không yếu
             obs, _, done, _, _ = env.step(action)
             tm.save(env, obs)
             
             if done:
-                draw_ui(env, obs, f"{Back.RED} GAME OVER! {Style.RESET_ALL}")
-                print("Bấm U để Undo hoặc Q để Quit.")
+                draw_ui(env, obs, f"{Back.RED} GAME OVER! {Style.RESET_ALL}", is_autoplay=False)
+                print("\nBấm R để Restart, U để Undo, Q để Quit.")
                 while True:
                     k = get_key().lower()
+                    if k == 'q': return
                     if k == 'u': 
                         e, o = tm.undo(env)
                         if e: obs = o; break
-                    if k == 'q': return
+                    if k == 'r': # Restart sau Game Over thủ công
+                        obs, _ = env.reset()
+                        tm = TimeMachine()
+                        tm.save(env, obs)
+                        break
 
 if __name__ == "__main__":
     main()

@@ -62,6 +62,9 @@ class ThreesGymEnv(gym.Env):
 
     def step(self, action):
         next_board, reward, done, next_hint_set = self.game.step(int(action))
+
+        # Scale reward
+        reward = reward * 0.01
         
         # 1. Cộng dồn reward
         self.current_episode_reward += reward
