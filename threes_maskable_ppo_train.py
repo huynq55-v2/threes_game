@@ -73,6 +73,14 @@ class ThreesGymEnv(gym.Env):
         # Trong Threes, hint > 1 con số (ví dụ [6, 12]) là quân Bonus
         if len(next_hint_set) > 1:
             self.bonus_hint_count += 1
+
+        # --- SỬA ĐOẠN NÀY: Gói ghém thông tin vào info ---
+        masks = self.valid_action_mask() # Tính mask ngay tại đây
+        
+        info = {
+            "action_mask": masks,            # Gửi mask ra ngoài luôn để đỡ phải hỏi lại
+            "score": self.current_episode_reward, # Gửi tổng reward ra để sort
+        }
         
         # 3. Log khi kết thúc ván
         if done:
@@ -83,7 +91,7 @@ class ThreesGymEnv(gym.Env):
                   f"Bonus Hints: {self.bonus_hint_count}")
         
         observation = self._process_obs(next_board, next_hint_set)
-        return observation, reward, done, False, {}
+        return observation, reward, done, False, info
 
     def valid_action_mask(self):
         valid_moves = self.game.valid_moves() 
