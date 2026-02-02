@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 NUM_CPU = 8             
 TOTAL_TIMESTEPS = 20_000_000 
 SAVE_DIR = "./logs_ppo_threes_resnet/"
+GAMMA = 0.99
 
 # ==========================================
 # PHẦN 1: MÔI TRƯỜNG (WRAPPER)
@@ -33,7 +34,9 @@ class ThreesGymEnv(gym.Env):
     def __init__(self):
         super().__init__()
         # Khởi tạo game Rust
-        self.game = threes_rs.ThreesEnv() 
+        self.game = threes_rs.ThreesEnv()
+
+        self.game.set_gamma(GAMMA)
         
         self.action_space = spaces.Discrete(4)
         
@@ -266,7 +269,7 @@ if __name__ == "__main__":
             batch_size=1024,
             n_epochs=10,
             ent_coef=0.02,
-            gamma=0.99,
+            gamma=GAMMA,
             policy_kwargs=policy_kwargs,
             tensorboard_log="./tensorboard_threes/",
             verbose=1,
@@ -282,7 +285,7 @@ if __name__ == "__main__":
     checkpoint_callback = CheckpointCallback(
         save_freq=actual_save_freq, 
         save_path=SAVE_DIR,
-        name_prefix="ppo_resnet"
+        name_prefix="ppo_resnet_PBRS"
     )
 
     # 2. Bắt đầu học

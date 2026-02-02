@@ -13,6 +13,7 @@ pub struct ThreesEnv {
     prev_max_count: u32,
     prev_pre_max_count: u32,
     prev_hub_count: u32,
+    gamma: f32,
 }
 
 #[pymethods]
@@ -30,7 +31,12 @@ impl ThreesEnv {
             prev_max_count: stats.max_count,
             prev_pre_max_count: stats.pre_max_count,
             prev_hub_count: stats.hub_count,
+            gamma: 0.99,
         }
+    }
+
+    pub fn set_gamma(&mut self, gamma: f32) {
+        self.gamma = gamma;
     }
 
     // reset return board and hints
@@ -61,8 +67,7 @@ impl ThreesEnv {
             _ => return (self.get_board_flat(), -10.0, true, self.game.hints.clone()),
         };
 
-        // 2. Init Reward & Scale
-        let mut reward = 0.0;
+        let phi_old = self.game.calculate_potential_hybrid();
 
         // 3. Thực hiện Move
         if self.game.can_move(dir) {
@@ -70,34 +75,16 @@ impl ThreesEnv {
             self.history.push(self.game.clone());
             self.future_history.clear();
 
-            // Gọi hàm move đã sửa, lấy về danh sách các Rank vừa gộp được
-            let (moved, merged_ranks) = self.game.move_dir(dir);
+            let (_, _) = self.game.move_dir(dir);
             let game_over = self.game.check_game_over();
 
-            if moved {
-                // reward += merged_ranks.len() as f32 * scale;
-                // Calculate Rarity Reward
-                let mut rarity_reward = 0.0;
-                if !merged_ranks.is_empty() {
-                    // Extract local board ranks
-                    let mut local_board_ranks = [0u8; 16];
-                    for (i, tile) in self.get_board_flat().iter().enumerate() {
-                        local_board_ranks[i] = crate::tile::get_rank_from_value(*tile);
-                    }
+            let phi_new = self.game.calculate_potential_hybrid();
 
-                    for rank in merged_ranks {
-                        rarity_reward += self
-                            .game
-                            .rarity
-                            .calculate_merge_reward(rank, &local_board_ranks);
-                    }
-                }
-                reward += rarity_reward;
-            }
+            let shaping_reward = (self.gamma * phi_new) - phi_old;
 
             (
                 self.get_board_flat(),
-                reward,
+                shaping_reward,
                 game_over,
                 self.game.hints.clone(),
             )
