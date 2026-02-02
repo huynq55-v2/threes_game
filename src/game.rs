@@ -6,6 +6,7 @@ use rand::Rng;
 use rand::rng;
 use rand::seq::IndexedRandom;
 use rand::seq::SliceRandom;
+use crate::rarity::RarityEngine;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Direction {
     Up,
@@ -24,6 +25,7 @@ pub struct Game {
     pub special: PseudoList<u32>,
     pub future_value: u32,
     pub hints: Vec<u32>,
+    pub rarity: RarityEngine,
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +68,8 @@ impl Game {
         let mut rng = rng();
         indices.shuffle(&mut rng);
 
+        let mut rarity = RarityEngine::new();
+
         // Take the first K_START_SPAWN_NUMBERS positions (usually 9)
         for &idx in indices.iter().take(K_START_SPAWN_NUMBERS as usize) {
             let row = idx / 4;
@@ -73,7 +77,9 @@ impl Game {
 
             // Get next value from the "deck"
             if let Some(val) = numbers.get_next() {
-                board[row][col] = Tile::new(val as u32);
+                let tile = Tile::new(val as u32);
+                board[row][col] = tile;
+                rarity.register_observation(tile.rank());
             }
         }
 
@@ -86,6 +92,7 @@ impl Game {
             special,
             future_value,
             hints,
+            rarity,
         };
 
         // calculate score
@@ -94,6 +101,30 @@ impl Game {
         game.future_value = game.get_next_value();
         game.hints = game.predict_future();
 
+        game
+    }
+
+    pub fn new_with_rarity(rarity: RarityEngine) -> Self {
+        let mut game = Game::new();
+        game.rarity = rarity;
+        
+        // Re-register initial board with the new engine to ensure consistency? 
+        // Or assume the passed engine is already "warm" and we just continue?
+        // Actually, if we pass an existing engine, we probably want to KEEP its global stats, 
+        // AND register the *new* initial board of this game instance.
+        // Game::new() already registered its initial board to its own fresh engine.
+        // If we overwrite `game.rarity`, we lose those registrations.
+        // So we should register the current board to the *passed* engine.
+        
+        for r in 0..4 {
+            for c in 0..4 {
+                let t = game.board[r][c];
+                if !t.is_empty() {
+                    game.rarity.register_observation(t.rank());
+                }
+            }
+        }
+        
         game
     }
 
@@ -389,7 +420,9 @@ impl Game {
 
             // Tính Rank trả về nếu là Merge
             let merged_rank = if is_merge {
-                Some(get_rank_from_value(new_val))
+                let r = get_rank_from_value(new_val);
+                self.rarity.register_observation(r);
+                Some(r)
             } else {
                 None
             };
@@ -419,7 +452,9 @@ impl Game {
 
     // Hàm 2: Thực thi việc đặt quân bài lên board
     pub fn spawn_at(&mut self, row: usize, col: usize, val: u32) {
-        self.board[row][col] = Tile::new(val);
+        let t = Tile::new(val);
+        self.board[row][col] = t;
+        self.rarity.register_observation(t.rank());
     }
 
     // Hàm wrapper cũ (đã được làm sạch)
@@ -550,6 +585,7 @@ impl Game {
             special,
             future_value,
             hints,
+            rarity: RarityEngine::new(),
         };
 
         game.future_value = game.get_next_value();
@@ -680,5 +716,45 @@ mod tests {
             }
         }
         println!("✅ Đã kiểm tra 10.000 lần spawn, tất cả đều khớp với Hint!");
+    }
+
+    #[test]
+    fn test_rarity_integration() {
+        let rarity_engine = RarityEngine::new();
+        let mut game = Game::new_with_rarity(rarity_engine);
+        
+        // 1. Initial board should be registered
+        // Game has K_START_SPAWN_NUMBERS tiles (9)
+        assert!(game.rarity.total_seen >= 9);
+        let initial_seen = game.rarity.total_seen;
+        
+        // 2. Force a merge
+        // Setup a simple board: 1 2 0 0 -> Left move -> 3
+        let t1 = Tile::new(1);
+        let t2 = Tile::new(2);
+        game.board = [[Tile::new(0); 4]; 4];
+        game.board[0][0] = t1;
+        game.board[0][1] = t2;
+        
+        // Reset stats to ensure we track new changes neatly, 
+        // OR just check if it increases.
+        // Let's create a NEW game with this board to be cleaner, 
+        // but easier just to modify board and move.
+        
+        let (moved, merged) = game.move_dir(Direction::Left);
+        assert!(moved);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0], 1); // Rank of 3 is 1
+        
+        // logic:
+        // move_dir -> shift_board_left -> process_single_row 
+        // -> if merge -> rarity.register_observation(new_rank)
+        // AND -> if moved -> do_spawn_on_row_ends -> spawn_at -> rarity.register_observation(new_tile)
+        
+        // So total_seen should increase by:
+        // 1 (merged tile 3)
+        // + 1 (spawned tile)
+        
+        assert_eq!(game.rarity.total_seen, initial_seen + 2);
     }
 }

@@ -18,8 +18,12 @@ impl Tile {
     /// Value 12 -> Rank 3
     /// ...
     pub fn rank(&self) -> u8 {
-        if self.value <= 2 {
+        if self.value == 0 {
             0
+        } else if self.value == 1 {
+            21
+        } else if self.value == 2 {
+            22
         } else {
             (self.value / 3).ilog2() as u8 + 1
         }
@@ -32,8 +36,12 @@ impl Tile {
 }
 
 pub fn get_rank_from_value(value: u32) -> u8 {
-    if value <= 2 {
+    if value == 0 {
         0
+    } else if value == 1 {
+        21
+    } else if value == 2 {
+        22
     } else {
         (value / 3).ilog2() as u8 + 1
     }
@@ -60,10 +68,10 @@ mod tests {
         assert_eq!(t_empty.rank(), 0);
 
         let t1 = Tile::new(1);
-        assert_eq!(t1.rank(), 0);
+        assert_eq!(t1.rank(), 21);
 
         let t2 = Tile::new(2);
-        assert_eq!(t2.rank(), 0);
+        assert_eq!(t2.rank(), 22);
 
         let t3 = Tile::new(3);
         assert_eq!(t3.rank(), 1);

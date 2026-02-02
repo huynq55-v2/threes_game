@@ -35,7 +35,9 @@ impl ThreesEnv {
 
     // reset return board and hints
     fn reset(&mut self) -> (Vec<u32>, Vec<u32>) {
-        self.game = Game::new();
+        // Create new game but preserve the "brain" (RarityEngine)
+        // We clone the existing engine to pass into the new game
+        self.game = Game::new_with_rarity(self.game.rarity.clone());
         self.history.clear();
         self.future_history.clear();
 
@@ -75,7 +77,24 @@ impl ThreesEnv {
             let game_over = self.game.check_game_over();
 
             if moved {
-                reward += merged_ranks.len() as f32 * scale;
+                // reward += merged_ranks.len() as f32 * scale;
+                // Calculate Rarity Reward
+                let mut rarity_reward = 0.0;
+                if !merged_ranks.is_empty() {
+                    // Extract local board ranks
+                    let mut local_board_ranks = [0u8; 16];
+                    for (i, tile) in self.get_board_flat().iter().enumerate() {
+                        local_board_ranks[i] = crate::tile::get_rank_from_value(*tile);
+                    }
+
+                    for rank in merged_ranks {
+                        rarity_reward += self
+                            .game
+                            .rarity
+                            .calculate_merge_reward(rank, &local_board_ranks);
+                    }
+                }
+                reward += rarity_reward * scale;
             }
 
             (
