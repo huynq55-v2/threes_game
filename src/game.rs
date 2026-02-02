@@ -762,4 +762,132 @@ mod tests {
         
         assert_eq!(game.rarity.total_seen, initial_seen + 2);
     }
+
+    #[test]
+    fn calculate_optimal_base_reward_simulation() {
+        use crate::game::Game;
+        use rand::rng;
+        use std::collections::HashMap;
+
+        println!("\n=== 🚀 BẮT ĐẦU MÔ PHỎNG ĐỂ TÌM BASE REWARD TỐI ƯU ===");
+        
+        // 1. Setup
+        // Dùng 1 RarityEngine duy nhất xuyên suốt 5000 ván để giả lập quá trình học lâu dài
+        let mut global_rarity = crate::rarity::RarityEngine::new(); 
+        
+        // Lưu trữ Dynamic Reward của từng Rank để tính thống kê
+        // Key: Rank -> Value: List các giá trị dynamic nhận được
+        let mut rank_stats: HashMap<u8, Vec<f32>> = HashMap::new();
+
+        let total_games = 50000;
+        let mut total_merges = 0;
+
+        for game_idx in 0..total_games {
+            // New game kế thừa RarityEngine cũ (để global_counts tăng dần)
+            let mut game = Game::new_with_rarity(global_rarity.clone());
+            let mut rng = rng();
+
+            loop {
+                let valid_moves = game.get_valid_moves();
+                if valid_moves.is_empty() {
+                    break;
+                }
+                
+                // Random move
+                let dir = *valid_moves.choose(&mut rng).unwrap();
+                let (moved, merged_ranks) = game.move_dir(dir);
+
+                if moved {
+                    // Nếu có merge, ta tính thử xem Dynamic Reward lúc này là bao nhiêu
+                    if !merged_ranks.is_empty() {
+                        // Lấy snapshot board hiện tại để tính Local Factor
+                        let mut local_board_ranks = [0u8; 16];
+                        for r in 0..4 {
+                            for c in 0..4 {
+                                local_board_ranks[r * 4 + c] = game.board[r][c].rank();
+                            }
+                        }
+
+                        for rank in merged_ranks {
+                            // --- CÔNG THỨC DYNAMIC (TÁI HIỆN) ---
+                            // Copy logic từ RarityEngine nhưng BỎ số 1.0 ở cuối
+                            let local_count = local_board_ranks.iter().filter(|&&r| r == rank).count() as f32;
+                            
+                            // Lưu ý: total_seen và global_counts lấy từ game.rarity (đã được update bên trong move_dir)
+                            let global_factor = (game.rarity.total_seen as f32 + 1.0) 
+                                              / (game.rarity.global_counts[rank as usize] as f32 + 1.0);
+                            
+                            let local_factor = 16.0 / (local_count + 1.0);
+                            
+                            // Dynamic thuần túy
+                            let raw_dynamic = global_factor.ln() * local_factor;
+                            
+                            rank_stats.entry(rank).or_insert(Vec::new()).push(raw_dynamic);
+                            total_merges += 1;
+                        }
+                    }
+                }
+            }
+            
+            // Cập nhật lại global_rarity từ game vừa chơi xong để ván sau thông minh hơn
+            global_rarity = game.rarity;
+            
+            if game_idx % 1000 == 0 {
+                println!("... Đã chạy xong {} ván ...", game_idx);
+            }
+        }
+
+        println!("\n=== 📊 KẾT QUẢ PHÂN TÍCH ({:?} Merges) ===", total_merges);
+        println!("{:<10} | {:<15} | {:<15} | {:<15}", "RANK", "MEDIAN DYNAMIC", "MEAN DYNAMIC", "MAX DYNAMIC");
+        println!("{}", "-".repeat(65));
+
+        let mut ranks: Vec<&u8> = rank_stats.keys().collect();
+        ranks.sort();
+
+        // Biến lưu giá trị tham chiếu cho Rank 1
+        let mut rank_1_median = 0.0;
+
+        for rank in ranks {
+            let mut vals = rank_stats[rank].clone();
+            if vals.is_empty() { continue; }
+            
+            // Tính Median
+            vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let mid = vals.len() / 2;
+            let median = vals[mid];
+            
+            // Tính Mean
+            let sum: f32 = vals.iter().sum();
+            let mean = sum / vals.len() as f32;
+            
+            let max_val = vals.last().unwrap();
+            
+            let tile_label = match rank {
+                1 => "Rank 1 (3)",
+                2 => "Rank 2 (6)",
+                5 => "Rank 5 (48)",
+                8 => "Rank 8 (384)",
+                _ => "Other",
+            };
+            
+            if *rank == 1 || *rank == 2 || *rank == 5 || *rank == 8 {
+                 println!("{:<10} | {:<15.4} | {:<15.4} | {:<15.4} <--- {}", rank, median, mean, max_val, tile_label);
+            }
+            
+            if *rank == 1 {
+                rank_1_median = median;
+            }
+        }
+
+        println!("\n=== 💡 KẾT LUẬN & GỢI Ý ===");
+        println!("Giá trị nội tại (Dynamic) trung bình của một cú gộp RÁC (Rank 1) là: {:.4}", rank_1_median);
+        println!("Để Base Reward có ý nghĩa cân bằng (không quá lớn, không quá nhỏ):");
+        println!("👉 Base Reward nên nằm trong khoảng [{:.2} - {:.2}]", rank_1_median * 0.5, rank_1_median * 2.0);
+        
+        println!("\nKiểm tra lại hệ số Scale hiện tại:");
+        println!("Nếu Base = 1.0 và Rank 1 Dynamic = {:.4}", rank_1_median);
+        println!("=> Tổng Reward gộp rác = {:.4}", 1.0 + rank_1_median);
+        println!("=> Tỷ lệ đóng góp của Base: {:.1}% (Nếu > 80% là AI lười, chỉ thích gộp rác lấy Base)", 
+                 (1.0 / (1.0 + rank_1_median)) * 100.0);
+    }
 }

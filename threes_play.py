@@ -108,7 +108,7 @@ def get_ai_evaluation(model, obs, action_masks, user_action):
         lower_mass = np.sum(masked_probs[masked_probs <= user_prob])
         return lower_mass < 0.5, lower_mass
 
-# --- PHẦN 4: UI MỚI (FIXED NEXT TILE) ---
+# --- PHẦN 4: UI MỚI (FIXED NEXT TILE - MULTI BLOCK) ---
 
 BG_STYLES = {
     0:  Back.BLACK, 1:  Back.CYAN, 2:  Back.RED, 3:  Back.WHITE,
@@ -133,30 +133,21 @@ def draw_ui(env, obs, message="", is_autoplay=False):
     
     board = np.array(env.unwrapped.game.get_board_flat()).reshape(4,4)
     
-    # --- BUG FIX SỐ 4: HIỂN THỊ HẾT CÁC HINT ---
-    # Lấy map từ index ngược ra value
+    # --- LẤY DATA HINT ---
     TILE_MAP_INV = {i: v for v, i in env.unwrapped.TILE_MAP.items()}
-    
-    # Tìm tất cả các index có giá trị > 0 trong vector hint
     hint_indices = np.where(obs['hint'] > 0.5)[0]
-    
-    # Convert sang list các giá trị thật
     hint_values = [TILE_MAP_INV.get(idx, 0) for idx in hint_indices]
-    hint_values.sort() # Sắp xếp cho đẹp
+    hint_values.sort()
     
-    # Tạo chuỗi hiển thị (ví dụ: "6 | 12")
+    # Nếu list rỗng (trường hợp lạ), để mặc định là 0 để vẽ dấu ?
     if not hint_values:
-        hint_str = "?"
-        bg_h, fg_h = Back.BLACK, Fore.WHITE
-    else:
-        hint_str = " | ".join(str(v) for v in hint_values)
-        # Lấy màu của con đầu tiên để làm nền đại diện
-        bg_h, fg_h = get_style(hint_values[0])
-    # -------------------------------------------
+        hint_values = [0]
 
     print(f"{Style.BRIGHT}=== THREES! AI GYM (IRON DISCIPLINE) ==={Style.RESET_ALL}\n")
 
-    tile_width = 8 # Tăng width lên chút để hiển thị số to
+    tile_width = 8 
+    
+    # 1. Vẽ Board
     for row in board:
         for line_type in range(3):
             for val in row:
@@ -169,13 +160,27 @@ def draw_ui(env, obs, message="", is_autoplay=False):
             print()
         print() 
 
-    # Vẽ Hint Box rộng hơn chút để chứa nhiều số
-    hint_width = max(tile_width, len(hint_str) + 2)
-    print(f"Next Tile:")
-    print(f"{bg_h}{' ' * hint_width}{Style.RESET_ALL}")
-    print(f"{bg_h}{fg_h}{hint_str:^{hint_width}}{Style.RESET_ALL}")
-    print(f"{bg_h}{' ' * hint_width}{Style.RESET_ALL}")
+    # 2. Vẽ Next Tile (Dạng các ô rời nhau)
+    print(f"Next Tile(s):")
     
+    # Loop 3 lần cho 3 dòng (Trên, Giữa-Số, Dưới) của các ô Hint
+    for line_type in range(3):
+        for val in hint_values:
+            bg, fg = get_style(val)
+            
+            # Nội dung bên trong ô
+            if line_type == 1:
+                s_val = str(val) if val > 0 else "?"
+                content = f"{s_val:^{tile_width}}"
+            else:
+                content = " " * tile_width
+            
+            # In ô hint + khoảng cách đệm (2 spaces)
+            print(f"{bg}{fg}{content}{Style.RESET_ALL}", end="  ")
+        print() # Xuống dòng sau khi in hết 1 hàng ngang của tất cả hint
+    
+    # ---------------------------------------------
+
     status_ai = f"{Back.GREEN} ON {Style.RESET_ALL}" if is_autoplay else f"{Back.RED} OFF {Style.RESET_ALL}"
 
     print(f"\n{Fore.YELLOW}Arrows{Style.RESET_ALL}: Move | {Fore.GREEN}U{Style.RESET_ALL}: Undo | {Fore.RED}R{Style.RESET_ALL}: Restart")
@@ -186,7 +191,7 @@ def draw_ui(env, obs, message="", is_autoplay=False):
 
 # --- PHẦN 5: MAIN ---
 def main():
-    model_path = "./logs_ppo_threes_resnet/ppo_resnet_14200000_steps.zip"
+    model_path = "./logs_ppo_threes_resnet/ppo_resnet_6400000_steps.zip"
     try:
         model = MaskablePPO.load(model_path)
     except:
@@ -201,7 +206,6 @@ def main():
     msg = ""
     ai_autoplay = False
     
-    # Delay cho AI (giây) - Fix số 3
     AI_DELAY = 0.15 
 
     while True:
@@ -210,7 +214,6 @@ def main():
 
         # --- MODE 1: AI AUTOPLAY ---
         if ai_autoplay:
-            # Check phím chen ngang (Non-blocking)
             if kbhit():
                 key = get_key()
                 if key in ['p', 'P']:
@@ -218,14 +221,13 @@ def main():
                     msg = f"{Fore.YELLOW}Đã tắt AI Autoplay."
                     continue 
                 if key in ['q', 'Q']: return
-                if key in ['r', 'R']: # Restart ngay cả khi AI đang chạy
+                if key in ['r', 'R']: 
                      obs, _ = env.reset()
                      tm = TimeMachine()
                      tm.save(env, obs)
                      msg = f"{Fore.GREEN}Đã Restart Game Mới!"
                      continue
 
-            # AI Logic
             masks = env.unwrapped.valid_action_mask()
             action, _ = model.predict(obs, action_masks=masks, deterministic=True)
             
@@ -233,39 +235,35 @@ def main():
             tm.save(env, obs)
             
             if done:
-                ai_autoplay = False # Tự tắt AI khi chết
+                ai_autoplay = False 
                 draw_ui(env, obs, f"{Back.RED} GAME OVER! {Style.RESET_ALL}", is_autoplay=False)
                 print("\nBấm R để Restart, U để Undo, Q để Quit.")
                 
-                # Loop chờ xử lý sau khi chết
                 while True:
                     k = get_key().lower()
                     if k == 'q': return
                     if k == 'u': 
                         e, o = tm.undo(env)
                         if e: obs = o; break
-                    if k == 'r': # Fix số 2: Restart sau Game Over
+                    if k == 'r': 
                         obs, _ = env.reset()
                         tm = TimeMachine()
                         tm.save(env, obs)
                         break
-                continue # Quay lại vòng lặp chính (với board mới hoặc undo)
+                continue 
 
-            time.sleep(AI_DELAY) # Fix số 3: Delay
-            continue # BUG FIX SỐ 1: Continue ngay để AI chạy tiếp, không rơi xuống phần 'get_key' chặn ở dưới
+            time.sleep(AI_DELAY) 
+            continue 
 
-        # --- MODE 2: MANUAL PLAYER (Blocking) ---
-        
-        key = get_key() # Chờ phím ở đây
+        # --- MODE 2: MANUAL PLAYER ---
+        key = get_key() 
         
         if key in ['q', 'Q']: break
         
-        # BUG FIX SỐ 1: Bấm P là loop lại ngay để lọt vào block if ai_autoplay ở trên
         if key in ['p', 'P']: 
             ai_autoplay = True
             continue 
 
-        # Fix số 2: Restart thủ công
         if key in ['r', 'R']:
             obs, _ = env.reset()
             tm = TimeMachine()
@@ -289,7 +287,6 @@ def main():
                 msg = f"{Fore.RED}Bị tường chặn!"
                 continue
 
-            # AI Advisor check
             current_max = max(env.unwrapped.game.get_board_flat())
             if current_max >= 12:
                 is_weak, score = get_ai_evaluation(model, obs, masks, action)
@@ -309,7 +306,7 @@ def main():
                     if k == 'u': 
                         e, o = tm.undo(env)
                         if e: obs = o; break
-                    if k == 'r': # Restart sau Game Over thủ công
+                    if k == 'r': 
                         obs, _ = env.reset()
                         tm = TimeMachine()
                         tm.save(env, obs)

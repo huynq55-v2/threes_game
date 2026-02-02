@@ -32,6 +32,11 @@ impl RarityEngine {
             (self.total_seen as f32 + 1.0) / (self.global_counts[rank as usize] as f32 + 1.0);
         let local_factor = 16.0 / (local_count + 1.0);
 
-        (global_factor.ln() * local_factor) + 1.0
+        // Dynamic Part: Giá trị dựa trên độ hiếm (Trung bình Rank 1 ~ 3.3)
+        let dynamic_part = global_factor.ln() * local_factor;
+
+        // Base Part: ĐÃ SỬA TỪ 1.0 -> 3.0
+        // Để cân bằng với dynamic_part của Rank 1
+        dynamic_part + 3.0
     }
 }
