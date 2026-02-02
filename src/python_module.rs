@@ -61,12 +61,8 @@ impl ThreesEnv {
 
         // 2. Init Reward & Scale
         // Giả sử scale để normalize reward về khoảng nhỏ cho PPO
-        let scale = 0.01;
+        let scale = 0.1;
         let mut reward = 0.0;
-
-        // --- LOGIC 1: TRỪ PHÍ GIÀ (Aging Penalty) ---
-        // Cứ mỗi step là trừ, bất kể có đi được hay không
-        reward -= 1.0 * scale;
 
         // 3. Thực hiện Move
         if self.game.can_move(dir) {
@@ -79,17 +75,7 @@ impl ThreesEnv {
             let game_over = self.game.check_game_over();
 
             if moved {
-                // --- LOGIC 2: THƯỞNG MERGE (Energy Density Reward) ---
-                for rank in merged_ranks {
-                    // Công thức: 2^(rank - 1)
-                    // Rank 1 (số 3) -> 2^0 = 1
-                    // Rank 2 (số 6) -> 2^1 = 2
-                    // Rank 3 (số 12) -> 2^2 = 4
-                    if rank >= 1 {
-                        let bonus = 2.0_f32.powi(rank as i32 - 1);
-                        reward += bonus * scale;
-                    }
-                }
+                reward += merged_ranks.len() as f32 * scale;
             }
 
             (

@@ -38,7 +38,7 @@ class ThreesGymEnv(gym.Env):
         self.action_space = spaces.Discrete(4)
         
         self.observation_space = spaces.Dict({
-            "board": spaces.Box(low=0, high=15, shape=(1, 4, 4), dtype=np.float32),
+            "board": spaces.Box(low=0, high=1, shape=(16, 4, 4), dtype=np.float32),
             "hint": spaces.Box(low=0, high=1, shape=(14,), dtype=np.float32),
         })
         
@@ -69,9 +69,6 @@ class ThreesGymEnv(gym.Env):
             # In ra TỔNG REWARD (self.current_episode_reward) thay vì reward bước cuối
             print(f"💀 Die! MaxTile: {int(max_val)} | Total Reward: {self.current_episode_reward:.2f}")
         # -------------------------------------------
-
-        # Scale reward
-        reward = reward * 0.1 
         
         observation = self._process_obs(next_board, next_hint_set)
         return observation, reward, done, False, {}
@@ -88,9 +85,16 @@ class ThreesGymEnv(gym.Env):
         ranks[board_np == 2] = 2
         mask = (board_np >= 3)
         ranks[mask] = np.floor(np.log2(board_np[mask] / 3.0) + 1e-5) + 3
-        ranks = np.clip(ranks, 0, 15)
-        board_final = ranks.reshape(1, 4, 4)
         
+        # Convert to One-Hot (16, 4, 4)
+        ranks_int = ranks.astype(int).reshape(4, 4)
+        one_hot = np.zeros((16, 4, 4), dtype=np.float32)
+        
+        # Vectorized one-hot assignment
+        # Cj: each channel j gets 1 where rank == j
+        for r in range(16):
+            one_hot[r, :, :] = (ranks_int == r).astype(np.float32)
+            
         # 2. Hint
         hint_vec = np.zeros((14,), dtype=np.float32)
         for h in hint_set:
@@ -100,7 +104,7 @@ class ThreesGymEnv(gym.Env):
         if len(hint_set) > 1:
             logger.info(f"Hint: {hint_set} -> {hint_vec.astype(int)}")
                 
-        return {"board": board_final, "hint": hint_vec}
+        return {"board": one_hot, "hint": hint_vec}
 
     def undo(self):
         # Gọi hàm undo từ Rust
@@ -148,9 +152,9 @@ class ThreesResNetExtractor(BaseFeaturesExtractor):
         super().__init__(observation_space, features_dim)
         
         # A. Board Branch
-        self.embedding = nn.Embedding(16, 64)
+        # Input is now (16, 4, 4) One-Hot
         self.resnet = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(16, 128, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(128),
             nn.GELU(),
             ResidualBlock(128),
@@ -175,13 +179,12 @@ class ThreesResNetExtractor(BaseFeaturesExtractor):
         )
 
     def forward(self, observations):
-        board = observations["board"].long().squeeze(1).clamp(0, 15)
+        board = observations["board"].float() # Ensure float
+        # board shape: (Batch, 16, 4, 4)
         hint = observations["hint"]
         
-        # Board Path
-        x = self.embedding(board)           
-        x = x.permute(0, 3, 1, 2)           
-        board_feat = self.resnet(x)         
+        # Board Path (No embedding, direct Conv)     
+        board_feat = self.resnet(board)         
         board_feat = board_feat.flatten(1)  
         
         # Hint Path
@@ -241,15 +244,17 @@ if __name__ == "__main__":
         model = MaskablePPO(
             "MultiInputPolicy",
             vec_env,
-            learning_rate=2e-4,
+            learning_rate=1e-5,
             n_steps=16384,
             batch_size=1024,
             n_epochs=10,
             ent_coef=0.02,
-            gamma=0.999,
+            gamma=0.99,
             policy_kwargs=policy_kwargs,
             tensorboard_log="./tensorboard_threes/",
             verbose=1,
+            target_kl=0.01,
+            # vf_coef=1.0,
             device="cpu"
         )
 
