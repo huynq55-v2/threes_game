@@ -280,7 +280,7 @@ if __name__ == "__main__":
 
     # --- CẤU HÌNH CALLBACK (SỬA Ở ĐÂY) ---
     # Để save sau mỗi 100k tổng steps, ta chia cho NUM_CPU
-    actual_save_freq = 100_000 // NUM_CPU 
+    actual_save_freq = 200_000 // NUM_CPU 
 
     checkpoint_callback = CheckpointCallback(
         save_freq=actual_save_freq, 

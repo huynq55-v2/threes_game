@@ -130,8 +130,8 @@ impl Game {
 
     pub fn calculate_potential_hybrid(&self) -> f32 {
         let w_power = 1.0;
-        let w_life  = 100.0;  // Giá của 1 mạng sống
-        let w_order = 10.0;   // Giá của sự ngăn nắp
+        let w_life  = 10.0;  // Giá của 1 mạng sống
+        let w_order = 1.0;   // Giá của sự ngăn nắp
 
         let mut growth_score = 0.0;
         let mut empty_count = 0.0;

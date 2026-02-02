@@ -82,9 +82,13 @@ impl ThreesEnv {
 
             let shaping_reward = (self.gamma * phi_new) - phi_old;
 
+            let base_survival = 5.0;
+
+            let total_reward = base_survival + shaping_reward;
+
             (
                 self.get_board_flat(),
-                shaping_reward,
+                total_reward,
                 game_over,
                 self.game.hints.clone(),
             )
