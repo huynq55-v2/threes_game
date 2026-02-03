@@ -212,56 +212,49 @@ impl ThreesEnv {
         episode: u32,
         total_episodes: u32,
     ) -> (f32, f32) {
-        // 1. Lưu số ô trống TRƯỚC khi đi
+        // 1. Lấy trạng thái S hiện tại
         let empty_before = self.game.count_tiles_with_value(0);
-
-        // Chúng ta lấy 8 biến thể của S TRƯỚC khi thực hiện step
-        // Lưu ý: Gọi hàm get_symmetries() của Env trả về Vec<[u32; 16]>
-        let s_symmetries = self.get_symmetries();
-
-        let s_flat_vec = self.get_board_flat(); // Trả về Vec<u32>
+        let s_flat_vec = self.get_board_flat();
         let s_flat: [u32; 16] = s_flat_vec.try_into().unwrap_or([0u32; 16]);
+
+        // Predict tự động tính tổng điểm của tất cả các Tuple (bao gồm 8 hướng)
         let v_s = brain.predict(&s_flat);
 
-        // 2. Thực hiện nước đi -> Nhận reward gốc từ game (r_env)
+        // 2. Thực hiện hành động
         let (_next_flat_vec, r_env, done, _) = self.step(action);
 
-        // 3. Tính Delta Empty để Shaping
+        // 3. Tính Reward Shaping (W giảm dần)
         let empty_after = self.game.count_tiles_with_value(0);
         let delta_empty = empty_after as f32 - empty_before as f32;
 
-        // 4. Tính W giảm dần (Decay)
-        // Ví dụ: Giảm từ 50.0 về 0.0 trong vòng 1 triệu ván đầu tiên
         let max_w = 50.0;
-        // Cho W giảm về 0 khi đạt 80% chặng đường để 20% cuối AI train thuần bằng điểm số
         let decay_limit = total_episodes as f32 * 0.8;
         let w = (max_w * (1.0 - (episode as f32 / decay_limit))).max(0.0);
 
-        // 5. Reward tổng hợp dùng để train
         let shaped_reward = r_env + (w * delta_empty);
 
-        // 3. Chuyển đổi S' (S next)
-        let s_next_flat_vec = self.get_board_flat(); // Trả về Vec<u32>
-        let s_next_flat: [u32; 16] = s_next_flat_vec.try_into().unwrap_or([0u32; 16]);
+        // 4. Lấy trạng thái S' (Next State) và tính TD Target
         let v_s_next = if done {
             0.0
         } else {
+            let s_next_vec = self.get_board_flat();
+            let s_next_flat: [u32; 16] = s_next_vec.try_into().unwrap_or([0u32; 16]);
             brain.predict(&s_next_flat)
         };
 
+        // 5. Tính sai số TD Error
         let td_error = shaped_reward + brain.gamma * v_s_next - v_s;
 
-        // --- ĐOẠN VIẾT TIẾP ĐỂ CẬP NHẬT 8 HƯỚNG ---
-
-        // 1. Tính toán giá trị điều chỉnh cho mỗi Tuple
-        // Chia cho tổng số Tuple (ví dụ 17) và chia cho 8 hướng đối xứng
+        // 6. Cập nhật trọng số (QUAN TRỌNG)
+        // Vì mạng chứa nhiều Tuple (do nhân bản 8 hướng), ta phải chia nhỏ sai số
+        // để tránh việc cập nhật quá đà (Over-correction).
+        // brain.tuples.len() hiện tại đã bao gồm cả nhân tử 8 rồi.
         let num_tuples = brain.tuples.len() as f32;
-        let update_val = (brain.alpha * td_error) / (num_tuples * 8.0);
+        let split_delta = (td_error * brain.alpha) / num_tuples;
 
-        // 2. Cập nhật Weights cho tất cả 8 biến thể đối xứng của S
-        for sym_flat in s_symmetries {
-            brain.update_weights(&sym_flat, update_val);
-        }
+        // Cập nhật 1 lần duy nhất trên bàn cờ gốc
+        // Hàm update_weights sẽ tự động phân phối split_delta vào tất cả các tuple đang kích hoạt
+        brain.update_weights(&s_flat, split_delta);
 
         (td_error.abs(), w)
     }
