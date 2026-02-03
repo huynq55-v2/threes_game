@@ -199,10 +199,12 @@ def worker_generate(worker_id, model_path, num_episodes, gamma, save_dir):
             done = False
             ep_obs_board = []
             ep_rewards = []
+            ep_actions = []
             
             while not done:
                 action_masks = env.get_wrapper_attr("valid_action_mask")()
                 action, _ = model.predict(obs, action_masks=action_masks, deterministic=False)
+                ep_actions.append(action)
                 ep_obs_board.append(obs['board'])
                 obs, reward, done, truncated, info = env.step(action)
                 ep_rewards.append(reward)
@@ -213,7 +215,14 @@ def worker_generate(worker_id, model_path, num_episodes, gamma, save_dir):
             for i in range(len(ep_obs_board)):
                 board_str = decode_one_hot_to_flat_string(ep_obs_board[i])
                 target_g = discounted_returns[i]
-                line = f"{board_str}|{target_g:.4f}\n"
+                
+                # --- THÊM CÁI NÀY: Lấy Action sư phụ đã chọn ---
+                action_taken = ep_actions[i] 
+                
+                # Format mới: "Board | G_Value | Action"
+                # Ví dụ: "1,2,3... | 150.5 | 0" (0 là UP)
+                line = f"{board_str}|{target_g:.4f}|{int(action_taken)}\n"
+                
                 buffer_lines.append(line)
             
             f.writelines(buffer_lines)
