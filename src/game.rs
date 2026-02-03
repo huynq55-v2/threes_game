@@ -453,6 +453,49 @@ impl Game {
         (moved, merged_ranks)
     }
 
+    pub fn get_all_possible_outcomes(&self, dir: Direction) -> Vec<Game> {
+        if !self.can_move(dir) {
+            return Vec::new();
+        }
+
+        let mut outcomes = Vec::new();
+        let rot = self.get_rotations_needed(dir);
+
+        // 1. Giả lập cú trượt
+        let mut temp_game = self.clone();
+        temp_game.rotate_board(rot);
+        let (moved, moved_rows, _) = temp_game.shift_board_left();
+
+        if moved {
+            // 2. Lấy TẤT CẢ giá trị có thể mọc từ predict_future
+            // Thay vì lấy 1 giá trị random, ta lấy list các khả năng
+            let possible_spawn_values = temp_game.predict_future();
+
+            // 3. Nhân chéo: Mỗi hàng mọc x Mỗi giá trị khả thi
+            for &row_idx in &moved_rows {
+                for &val in &possible_spawn_values {
+                    let mut possible_game = temp_game.clone();
+                    
+                    // Spawn cố định vào kịch bản này
+                    possible_game.spawn_at(row_idx, 3, val);
+
+                    // Cập nhật trạng thái như một bước đi thật
+                    possible_game.num_move += 1;
+                    possible_game.calculate_score();
+                    // Quan trọng: Cập nhật future cho bước kế tiếp
+                    possible_game.future_value = possible_game.get_next_value();
+                    possible_game.hints = possible_game.predict_future();
+
+                    // 4. Xoay ngược lại
+                    possible_game.rotate_board(4 - rot);
+                    
+                    outcomes.push(possible_game);
+                }
+            }
+        }
+        outcomes
+    }
+
     // --- 3. CÁC HÀM XỬ LÝ LOGIC CỐT LÕI (CORE LOGIC) ---
 
     /// Duyệt từng hàng, xử lý dồn sang trái
@@ -594,21 +637,20 @@ impl Game {
     
     pub fn get_symmetries(&self) -> Vec<[[Tile; 4]; 4]> {
         let mut symmetries = Vec::with_capacity(8);
-        
-        let r0 = self.board;
-        let r90 = Self::rotate_board_raw(r0);
-        let r180 = Self::rotate_board_raw(r90);
-        let r270 = Self::rotate_board_raw(r180);
+        let mut current = self.board;
 
-        symmetries.push(r0);
-        symmetries.push(r90);
-        symmetries.push(r180);
-        symmetries.push(r270);
+        // 4 phép xoay của bản gốc
+        for _ in 0..4 {
+            current = Self::rotate_board_raw(current);
+            symmetries.push(current);
+        }
 
-        symmetries.push(Self::flip_board_x_raw(r0));
-        symmetries.push(Self::flip_board_x_raw(r90));
-        symmetries.push(Self::flip_board_x_raw(r180));
-        symmetries.push(Self::flip_board_x_raw(r270));
+        // Lật bản gốc rồi xoay tiếp 4 lần
+        let mut flipped = Self::flip_board_x_raw(self.board);
+        for _ in 0..4 {
+            flipped = Self::rotate_board_raw(flipped);
+            symmetries.push(flipped);
+        }
 
         symmetries
     }
@@ -799,6 +841,53 @@ mod tests {
             }
         }
         println!("✅ Đã kiểm tra 10.000 lần spawn, tất cả đều khớp với Hint!");
+    }
+
+    #[test]
+    fn test_symmetries_uniqueness() {
+        // Tạo bàn cờ test với các giá trị khác biệt hoàn toàn
+        // 0  1  2  3
+        // 4  5  6  7
+        // 8  9 10 11
+        // 12 13 14 15
+        let mut game = Game::new(); 
+        for i in 0..16 {
+            game.board[i / 4][i % 4].value = i as u32;
+        }
+
+        let syms = game.get_symmetries();
+        
+        // 1. Kiểm tra số lượng phải là 8
+        assert_eq!(syms.len(), 8);
+
+        // 2. Kiểm tra tính độc nhất (không ma trận nào trùng nhau)
+        for i in 0..8 {
+            for j in (i + 1)..8 {
+                assert_ne!(syms[i], syms[j], "Symmetry {} and {} are identical!", i, j);
+            }
+        }
+    }
+
+    #[test]
+    fn test_specific_symmetry_rotation() {
+        let mut game = Game::new();
+        game.board[0][0].value = 99; // Chỉ đặt 1 ô ở góc trên trái
+
+        let syms = game.get_symmetries();
+        
+        // Ô 99 phải xuất hiện ở 4 góc khác nhau qua các phép xoay
+        let mut corner_hits = 0;
+        if syms[0][0][0].value == 99 { corner_hits += 1; } // Gốc
+        if syms[0][0][3].value == 99 { corner_hits += 1; } // Xoay/Lật
+        if syms[0][3][0].value == 99 { corner_hits += 1; }
+        if syms[0][3][3].value == 99 { corner_hits += 1; }
+
+        // Trong 8 biến thể của 1 ô góc, nó phải nằm ở các vị trí góc
+        for s in syms {
+            let val_at_corners = s[0][0].value == 99 || s[0][3].value == 99 || 
+                                 s[3][0].value == 99 || s[3][3].value == 99;
+            assert!(val_at_corners, "A corner tile must remain in a corner after symmetry");
+        }
     }
 
     #[test]

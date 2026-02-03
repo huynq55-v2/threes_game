@@ -1,25 +1,24 @@
 use crate::game::{Direction, Game};
+use crate::n_tuple_network::NTupleNetwork;
 use crate::ui::{ConsoleUI, InputEvent};
 use pyo3::prelude::*;
+use rand::Rng as _;
 use rayon::prelude::*;
 
-#[pyclass]
 pub struct ThreesEnv {
-    game: Game,
-    history: Vec<Game>,
-    future_history: Vec<Game>,
+    pub game: Game,
+    pub history: Vec<Game>,
+    pub future_history: Vec<Game>,
     // For reward calculation
-    prev_max_val: u32,
-    prev_max_count: u32,
+    pub prev_max_val: u32,
+    pub prev_max_count: u32,
     prev_pre_max_count: u32,
     prev_hub_count: u32,
     gamma: f32,
 }
 
-#[pymethods]
 impl ThreesEnv {
-    #[new]
-    fn new() -> Self {
+    pub fn new() -> Self {
         let game = Game::new();
         // Initialize stats from the new game state
         let stats = game.get_game_stats();
@@ -40,7 +39,7 @@ impl ThreesEnv {
     }
 
     // reset return board and hints
-    fn reset(&mut self) -> (Vec<u32>, Vec<u32>) {
+    pub fn reset(&mut self) -> (Vec<u32>, Vec<u32>) {
         // Create new game but preserve the "brain" (RarityEngine)
         // We clone the existing engine to pass into the new game
         self.game = Game::new_with_rarity(self.game.rarity.clone());
@@ -75,20 +74,28 @@ impl ThreesEnv {
             self.history.push(self.game.clone());
             self.future_history.clear();
 
-            let (_, _) = self.game.move_dir(dir);
+            let (_, merged_ranks) = self.game.move_dir(dir);
             let game_over = self.game.check_game_over();
 
-            let phi_new = self.game.calculate_potential_hybrid();
+            // let phi_new = self.game.calculate_potential_hybrid();
 
-            let shaping_reward = (self.gamma * phi_new) - phi_old;
+            // let shaping_reward = (self.gamma * phi_new) - phi_old;
 
-            let base_survival = 5.0;
+            // let base_survival = 5.0;
 
-            let total_reward = base_survival + shaping_reward;
+            // let total_reward = base_survival + shaping_reward;
+
+            let mut reward = 0.0;
+            for rank in merged_ranks {
+                // Theo quy ước của bác: Rank 1 (số 3) = 3^1 điểm
+                if rank > 0 {
+                    reward += 3.0_f32.powi(rank as i32);
+                }
+            }
 
             (
                 self.get_board_flat(),
-                total_reward,
+                reward,
                 game_over,
                 self.game.hints.clone(),
             )
@@ -158,55 +165,124 @@ impl ThreesEnv {
         ]
     }
 
+    pub fn get_random_valid_action(&self) -> u32 {
+        let mut rng = rand::rng();
+        let mut action = rng.random_range(0..4);
+        while !self.valid_moves()[action] {
+            action = rng.random_range(0..4);
+        }
+        action as u32
+    }
+
+    pub fn get_best_action_expectimax(&self, brain: &NTupleNetwork) -> u32 {
+        let mut best_val = -f32::MAX;
+        let mut best_action = 0;
+
+        for action_idx in 0..4 {
+            let dir = match action_idx {
+                0 => Direction::Up,
+                1 => Direction::Down,
+                2 => Direction::Left,
+                3 => Direction::Right,
+                _ => continue,
+            };
+
+            let outcomes = self.game.get_all_possible_outcomes(dir);
+
+            if !outcomes.is_empty() {
+                let mut expected_value = 0.0;
+                for outcome in &outcomes {
+                    expected_value += brain.predict_game(outcome);
+                }
+                expected_value /= outcomes.len() as f32;
+
+                if expected_value > best_val {
+                    best_val = expected_value;
+                    best_action = action_idx;
+                }
+            }
+        }
+        best_action
+    }
+
+    pub fn train_step(
+        &mut self,
+        brain: &mut NTupleNetwork,
+        action: u32,
+        episode: u32,
+        total_episodes: u32,
+    ) -> (f32, f32) {
+        // 1. Lưu số ô trống TRƯỚC khi đi
+        let empty_before = self.game.count_tiles_with_value(0);
+
+        // Chúng ta lấy 8 biến thể của S TRƯỚC khi thực hiện step
+        // Lưu ý: Gọi hàm get_symmetries() của Env trả về Vec<[u32; 16]>
+        let s_symmetries = self.get_symmetries();
+
+        let s_flat_vec = self.get_board_flat(); // Trả về Vec<u32>
+        let s_flat: [u32; 16] = s_flat_vec.try_into().unwrap_or([0u32; 16]);
+        let v_s = brain.predict(&s_flat);
+
+        // 2. Thực hiện nước đi -> Nhận reward gốc từ game (r_env)
+        let (_next_flat_vec, r_env, done, _) = self.step(action);
+
+        // 3. Tính Delta Empty để Shaping
+        let empty_after = self.game.count_tiles_with_value(0);
+        let delta_empty = empty_after as f32 - empty_before as f32;
+
+        // 4. Tính W giảm dần (Decay)
+        // Ví dụ: Giảm từ 50.0 về 0.0 trong vòng 1 triệu ván đầu tiên
+        let max_w = 50.0;
+        // Cho W giảm về 0 khi đạt 80% chặng đường để 20% cuối AI train thuần bằng điểm số
+        let decay_limit = total_episodes as f32 * 0.8;
+        let w = (max_w * (1.0 - (episode as f32 / decay_limit))).max(0.0);
+
+        // 5. Reward tổng hợp dùng để train
+        let shaped_reward = r_env + (w * delta_empty);
+
+        // 3. Chuyển đổi S' (S next)
+        let s_next_flat_vec = self.get_board_flat(); // Trả về Vec<u32>
+        let s_next_flat: [u32; 16] = s_next_flat_vec.try_into().unwrap_or([0u32; 16]);
+        let v_s_next = if done {
+            0.0
+        } else {
+            brain.predict(&s_next_flat)
+        };
+
+        let td_error = shaped_reward + brain.gamma * v_s_next - v_s;
+
+        // --- ĐOẠN VIẾT TIẾP ĐỂ CẬP NHẬT 8 HƯỚNG ---
+
+        // 1. Tính toán giá trị điều chỉnh cho mỗi Tuple
+        // Chia cho tổng số Tuple (ví dụ 17) và chia cho 8 hướng đối xứng
+        let num_tuples = brain.tuples.len() as f32;
+        let update_val = (brain.alpha * td_error) / (num_tuples * 8.0);
+
+        // 2. Cập nhật Weights cho tất cả 8 biến thể đối xứng của S
+        for sym_flat in s_symmetries {
+            brain.update_weights(&sym_flat, update_val);
+        }
+
+        (td_error.abs(), w)
+    }
+
     fn get_hint_set(&self) -> Vec<u32> {
         self.game.hints.clone()
     }
 
-    fn get_symmetries(&self) -> Vec<(Vec<u32>, Vec<u32>)> {
+    pub fn get_symmetries(&self) -> Vec<[u32; 16]> {
         let boards = self.game.get_symmetries();
         let mut result = Vec::with_capacity(8);
 
-        // 0: Up, 1: Down, 2: Left, 3: Right
-        let p_id = vec![0, 1, 2, 3];
-        // Rot90: Up->Right(3), Down->Left(2), Left->Up(0), Right->Down(1)
-        let p_rot90 = vec![3, 2, 0, 1];
-        // Rot180: Up->Down(1), Down->Up(0), Left->Right(3), Right->Left(2)
-        let p_rot180 = vec![1, 0, 3, 2];
-        // Rot270: Up->Left(2), Down->Right(3), Left->Down(1), Right->Up(0)
-        let p_rot270 = vec![2, 3, 1, 0];
-        // FlipX: Left<->Right (2<->3)
-        let p_flip = vec![0, 1, 3, 2];
-
-        let apply_map = |base: &Vec<u32>, map: &Vec<u32>| -> Vec<u32> {
-            base.iter().map(|&x| map[x as usize]).collect()
-        };
-
-        let p_flip_r0 = p_flip.clone();
-        let p_flip_r90 = apply_map(&p_rot90, &p_flip);
-        let p_flip_r180 = apply_map(&p_rot180, &p_flip);
-        let p_flip_r270 = apply_map(&p_rot270, &p_flip);
-
-        let perms = vec![
-            p_id,
-            p_rot90,
-            p_rot180,
-            p_rot270,
-            p_flip_r0,
-            p_flip_r90,
-            p_flip_r180,
-            p_flip_r270,
-        ];
-
-        for (i, board) in boards.iter().enumerate() {
-            let mut flat = Vec::with_capacity(16);
+        for board in boards.into_iter() {
+            let mut flat = [0u32; 16];
             for r in 0..4 {
                 for c in 0..4 {
-                    flat.push(board[r][c].value);
+                    flat[r * 4 + c] = board[r][c].value;
                 }
             }
-            result.push((flat, perms[i].clone()));
+            result.push(flat);
         }
-
         result
     }
 
@@ -220,7 +296,6 @@ impl ThreesEnv {
         flat
     }
 
-    #[getter]
     fn score(&self) -> u32 {
         self.game.score
     }
