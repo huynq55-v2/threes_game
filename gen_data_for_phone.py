@@ -239,7 +239,7 @@ def run_parallel_generation(model_path, total_episodes=1000, num_workers=4):
     
     # 2. Tạo tên file hợp nhất với TimeStamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    final_filename = f"threes_ppo_data_{timestamp}.dat"
+    final_filename = f"threes_ppo_data_{timestamp}.txt"
     final_path = os.path.join(SAVE_DIR, final_filename)
 
     print(f"=== Đang hợp nhất {len(temp_files)} files thành: {final_filename} ===")
