@@ -45,13 +45,14 @@ impl NTupleNetwork {
         network
     }
 
-    /// Lưu file chuẩn MessagePack (Để Android đọc được)
     pub fn export_to_msgpack(&self, filename: &str) -> std::io::Result<()> {
         let file = File::create(filename)?;
         let mut writer = BufWriter::new(file);
 
-        // Serialize struct thành MessagePack binary
-        let mut serializer = Serializer::new(&mut writer);
+        // --- SỬA DÒNG NÀY ---
+        // Thêm .with_struct_map() để ép ghi tên trường (Map) thay vì thứ tự (Array)
+        let mut serializer = Serializer::new(&mut writer).with_struct_map();
+
         self.serialize(&mut serializer)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 

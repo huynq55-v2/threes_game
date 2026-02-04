@@ -3,8 +3,8 @@ use rayon::prelude::*;
 use std::fs::File; // <--- Thêm File
 use std::io::BufReader; // <--- Thêm BufReader
 use std::sync::{Arc, Mutex, RwLock}; // Cần Mutex cho PBT
-use std::thread; // <--- Thêm thread
 use std::time::Duration;
+use std::{env, thread}; // <--- Thêm thread
 use threes_rs::hotload_config::HotLoadConfig;
 use threes_rs::{
     n_tuple_network::NTupleNetwork, pbt::PBTManager, pbt::TrainingConfig, python_module::ThreesEnv,
@@ -13,6 +13,13 @@ use threes_rs::{
 struct SharedBrain {
     network: *mut NTupleNetwork,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq)] // Derive Copy để truyền vào thread không bị move
+enum TrainingPolicy {
+    Greedy,
+    Expectimax,
+}
+
 unsafe impl Send for SharedBrain {}
 unsafe impl Sync for SharedBrain {}
 
@@ -21,12 +28,41 @@ fn main() {
 
     let gamma = 0.995;
 
-    // CẤU HÌNH CHẠY TỪNG KHÚC (CHUNK)
-    let chunk_episodes = 1_000_000; // Mỗi lần chạy 1 triệu ván rồi nghỉ
+    let args: Vec<String> = env::args().collect();
 
-    // QUAN TRỌNG: Lần 1 để bằng 0.
-    // Lần 2 (khi đã có file brain_ep_1000000.dat) thì sửa thành 1_000_000
-    let resume_from_episode = 0;
+    // Nếu chạy: cargo run -- 2000000
+    // Thì nó sẽ tự hiểu là resume từ 2 triệu
+    let resume_from_episode = if args.len() > 1 {
+        args[1].parse::<usize>().unwrap_or(0) as u32
+    } else {
+        0 as u32
+    };
+
+    // 2. Tham số Policy (Index 2) - MỚI
+    let policy_arg = if args.len() > 2 {
+        args[2].to_lowercase()
+    } else {
+        "greedy".to_string() // Mặc định là Greedy nếu không nhập
+    };
+
+    let training_policy = match policy_arg.as_str() {
+        "expect" | "expectimax" => {
+            println!("🧠 Training Mode: EXPECTIMAX (Chậm nhưng chắc)");
+            TrainingPolicy::Expectimax
+        }
+        _ => {
+            println!("⚡ Training Mode: GREEDY (Tốc độ bàn thờ)");
+            TrainingPolicy::Greedy
+        }
+    };
+
+    let chunk_episodes = 1_000_000;
+    let current_target = resume_from_episode + chunk_episodes;
+
+    println!(
+        "🚀 Bắt đầu từ: {} | Mục tiêu đợt này: {}",
+        resume_from_episode, current_target
+    );
 
     // Tổng đích đến (để tính Alpha decay cho chuẩn)
     // Ví dụ mục tiêu cuối cùng là 10 triệu
@@ -34,11 +70,17 @@ fn main() {
 
     // --- SỬA LỖI LOADING Ở ĐÂY ---
     let mut brain = if resume_from_episode > 0 {
-        let filename = format!("brain_ep_{}.msgpack", resume_from_episode); // Đổi đuôi .msgpack
+        let filename = format!("brain_ep_{}.msgpack", resume_from_episode);
         println!("📂 Đang load não từ checkpoint: {}", filename);
 
-        // Gọi hàm mới load_from_msgpack
-        NTupleNetwork::load_from_msgpack(&filename).expect("Không tìm thấy file não để load!")
+        let b = NTupleNetwork::load_from_msgpack(&filename).expect("Không tìm thấy file!");
+
+        // [DEBUG] In ra để xem nó là 0.0 hay là số thực
+        println!(
+            "🧐 CHECK DATA GỐC: Empty={:.4}, Snake={:.4}",
+            b.w_empty, b.w_snake
+        );
+        b
     } else {
         println!("✨ Tạo não mới tinh...");
         NTupleNetwork::new(0.1, 0.995)
@@ -65,7 +107,7 @@ fn main() {
 
     (0..num_threads).into_par_iter().for_each(|t_id| {
         let mut local_env = ThreesEnv::new(gamma);
-        let ep_per_thread = chunk_episodes / num_threads as u32;
+        let ep_per_thread = chunk_episodes as u32 / num_threads;
 
         run_training_parallel(
             &mut local_env,
@@ -77,6 +119,7 @@ fn main() {
             resume_from_episode,   // <--- TRUYỀN THÊM OFFSET VÀO
             t_id,
             num_threads,
+            training_policy,
         );
     });
 
@@ -111,60 +154,58 @@ fn run_training_parallel(
     hot_config: Arc<RwLock<HotLoadConfig>>,
     episodes_to_run: u32,
     total_target_episodes: u32,
-    start_offset: u32, // <--- THAM SỐ MỚI
+    start_offset: u32,
     thread_id: u32,
     num_threads: u32,
+    policy: TrainingPolicy,
 ) {
     let mut rng = rand::rng();
     let mut running_error = 0.0;
     let mut running_score = 0.0;
 
-    // --- PBT SETUP: KHỞI TẠO CONFIG ---
-    // Thread 0: Giữ config chuẩn (Baseline)
-    // Các thread khác: Random để tìm vùng đất mới
-    let mut local_config = if thread_id == 0 {
-        TrainingConfig {
-            w_empty: 50.0,
-            // w_disorder: 1.0,
-            w_snake: 0.0,
-        }
-    } else {
-        TrainingConfig {
-            // Random w_empty từ 30 -> 80
-            w_empty: rng.random_range(30.0..80.0),
-            // Random w_disorder từ 0.5 -> 2.0
-            // w_disorder: rng.random_range(0.5..2.0),
-            w_snake: 0.0,
-        }
-    };
-
-    // Áp dụng config ngay lập tức
-    env.set_config(local_config);
-
-    // Hogwild Magic
+    // 1. LẤY BRAIN TRƯỚC (Để có dữ liệu resume)
     let ptr = shared_brain.network;
     let brain = unsafe { &mut *ptr };
 
-    // Config riêng của Thread này (Do PBT quản lý)
-    let mut pbt_config = TrainingConfig::default();
-    if thread_id != 0 {
-        // Random khởi tạo để đa dạng hóa quần thể
-        pbt_config.w_empty = rng.random_range(30.0..80.0);
-        pbt_config.w_snake = rng.random_range(0.0..0.5);
-    }
+    // 2. KHỞI TẠO PBT_CONFIG (Xử lý cả Resume và Train lần đầu)
+    let mut pbt_config = if thread_id == 0 {
+        TrainingConfig {
+            // Nếu não có giá trị (>0) thì lấy giá trị đó (Resume)
+            // Nếu không (lần đầu) thì lấy số mặc định an toàn (ví dụ 40.0 và 50.0)
+            w_empty: if brain.w_empty > 0.0 {
+                brain.w_empty
+            } else {
+                50.0
+            },
+            w_snake: if brain.w_snake > 0.0 {
+                brain.w_snake
+            } else {
+                50.0
+            },
+        }
+    } else {
+        // Các thread khác: Nếu não rỗng thì random rộng, nếu có não thì biến động quanh não
+        let (base_empty, base_snake) = if brain.w_empty > 0.0 {
+            (brain.w_empty, brain.w_snake)
+        } else {
+            (rng.random_range(30.0..60.0), rng.random_range(20.0..80.0))
+        };
+
+        TrainingConfig {
+            w_empty: (base_empty * rng.random_range(0.8..1.2)).clamp(1.0, 500.0),
+            w_snake: (base_snake * rng.random_range(0.8..1.2)).clamp(0.0, 1000.0),
+        }
+    };
 
     // --- VÒNG LẶP CHÍNH ---
     for local_ep in 0..episodes_to_run {
-        // 1. TÍNH TOÁN TIẾN ĐỘ
         let current_global_ep = (local_ep * num_threads + thread_id) + start_offset;
         let progress = current_global_ep as f32 / total_target_episodes as f32;
 
-        // 2. XỬ LÝ HOT CONFIG (Ưu tiên file config.json)
-        // Đọc cấu hình từ file (Read Lock - rất nhanh)
+        // 3. XỬ LÝ HOT CONFIG & MERGE
         let current_hot = *hot_config.read().unwrap();
-
-        // Merge: Nếu file có set (>0) thì dùng file, không thì dùng PBT
         let mut effective_config = pbt_config;
+
         if current_hot.w_empty_override > 0.0 {
             effective_config.w_empty = current_hot.w_empty_override;
         }
@@ -172,26 +213,32 @@ fn run_training_parallel(
             effective_config.w_snake = current_hot.w_snake_override;
         }
 
-        // Áp dụng vào môi trường
+        // Áp dụng config vào môi trường chơi game
         env.set_config(effective_config);
 
-        // 3. TÍNH ALPHA & EPSILON
+        // 4. ALPHA & EPSILON DECAY
         let mut current_alpha = (0.1 * (1.0 - progress)).max(0.001);
-        // Nếu file ép buộc Alpha
         if current_hot.alpha_override > 0.0 {
             current_alpha = current_hot.alpha_override;
         }
-
         let current_epsilon = (0.5 * (1.0 - (progress / 0.8))).max(0.01);
 
-        // 4. CHƠI GAME (Training Loop)
+        // 5. TRAINING STEP
         env.reset();
         while !env.game.game_over {
+            // Logic chọn nước đi (Action Selection)
             let action = if rng.random_bool(current_epsilon.into()) {
-                // Hoặc random_bool nếu dùng rand 0.9
+                // Epsilon-Greedy: Vẫn giữ tỷ lệ ngẫu nhiên để khám phá
                 env.get_random_valid_action()
             } else {
-                env.get_best_action_greedy(brain)
+                // Khai thác (Exploitation) dựa trên Policy đã chọn
+                match policy {
+                    TrainingPolicy::Greedy => env.get_best_action_greedy(brain),
+                    TrainingPolicy::Expectimax => {
+                        // Bác cần đảm bảo hàm này đã có trong ThreesEnv nhé!
+                        env.get_best_action_expectimax(brain)
+                    }
+                }
             };
 
             let (error, _) = env.train_step(brain, action, current_alpha);
@@ -199,53 +246,51 @@ fn run_training_parallel(
         }
         running_score = running_score * 0.99 + env.game.score as f32 * 0.01;
 
-        // 5. PBT EVOLVE (Mỗi 1000 ván)
+        // 6. PBT EVOLVE
         if local_ep > 0 && local_ep % 1000 == 0 {
             let mut pbt_guard = pbt.lock().unwrap();
-            // Báo cáo config GỐC (pbt_config) chứ không phải config đã merge
             let (evolved, new_cfg) =
                 pbt_guard.report_and_evolve(thread_id, running_score, pbt_config);
-
             if evolved {
-                pbt_config = new_cfg; // Cập nhật config gốc
-                                      // Reset điểm nhẹ để đo lường config mới
-                                      // running_score *= 0.9;
+                pbt_config = new_cfg;
             }
         }
 
-        // 6. LOGGING (Chỉ Thread 0)
-        if thread_id == 0 && local_ep % 500 == 0 {
-            // Helper in ra xem có đang Override không
-            let fmt = |val: f32, ovr: f32| {
-                if ovr > 0.0 {
-                    format!("{:.1}(F)", ovr)
+        // 7. LOGGING & SAVING (Thread 0 đảm nhiệm)
+        if thread_id == 0 {
+            // Log mỗi 500 ván của Thread 0 (để theo dõi tiến độ)
+            if local_ep % 500 == 0 {
+                println!(
+                    "Ep: {:>8} | Err: {:.4} | Sc: {:>5.0} | Emp: {:.1} | Snk: {:.1} | Alp: {:.5}",
+                    current_global_ep,
+                    running_error,
+                    running_score,
+                    effective_config.w_empty,
+                    effective_config.w_snake,
+                    current_alpha
+                );
+            }
+
+            // ĐIỀU KIỆN SAVE: Chỉ save khi chạy xong ván cuối cùng của đợt này
+            // local_ep chạy từ 0 đến (episodes_to_run - 1)
+            if local_ep == episodes_to_run - 1 {
+                // Tính toán con số tổng kết chính xác
+                let end_ep_of_chunk = start_offset + (episodes_to_run * num_threads);
+
+                let filename = format!("brain_ep_{}.msgpack", end_ep_of_chunk);
+
+                // Cập nhật config mới nhất vào não để mang đi save
+                brain.w_empty = pbt_config.w_empty;
+                brain.w_snake = pbt_config.w_snake;
+
+                if let Err(e) = brain.export_to_msgpack(&filename) {
+                    eprintln!("❌ Lỗi lưu file: {}", e);
                 } else {
-                    format!("{:.1}", val)
+                    println!(
+                        "💾 [DONE] Đã hoàn thành Chunk. File checkpoint: {}",
+                        filename
+                    );
                 }
-            };
-
-            println!(
-                "Ep: {:>8} | Err: {:.4} | Sc: {:>5.0} | Emp: {} | Snk: {} | Alp: {:.5}",
-                current_global_ep,
-                running_error,
-                running_score,
-                fmt(pbt_config.w_empty, current_hot.w_empty_override),
-                fmt(pbt_config.w_snake, current_hot.w_snake_override),
-                current_alpha
-            );
-        }
-
-        // 7. SAVE CHECKPOINT (MessagePack)
-        if thread_id == 0 && current_global_ep > 0 && current_global_ep % 1_000_000 == 0 {
-            let filename = format!("brain_ep_{}.msgpack", current_global_ep); // Đổi đuôi file cho dễ nhớ
-
-            brain.w_empty = local_config.w_empty;
-            brain.w_snake = local_config.w_snake;
-
-            if let Err(e) = brain.export_to_msgpack(&filename) {
-                eprintln!("❌ Lỗi lưu file {}: {}", filename, e);
-            } else {
-                println!("💾 Saved Android-ready model: {}", filename);
             }
         }
     }

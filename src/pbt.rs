@@ -16,7 +16,7 @@ impl Default for TrainingConfig {
         Self {
             w_empty: 50.0,
             // w_disorder: 1.0,
-            w_snake: 0.0,
+            w_snake: 50.0,
         }
     }
 }

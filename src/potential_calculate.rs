@@ -98,11 +98,22 @@ pub fn calculate_snake(board: &[[Tile; 4]; 4]) -> f32 {
     // Trọng số càng to càng quan trọng (ở đây dùng đơn vị tuyến tính cho nhẹ,
     // nhưng khi nhân với Rank của Tile nó sẽ tạo ra hiệu ứng lũy thừa)
     const SNAKE_WEIGHTS: [f32; 16] = [
-        // Hàng 0 (Trọng số cao nhất)
-        65536.0, 32768.0, 16384.0, 8192.0, // Hàng 1 (Ngược lại)
-        512.0, 1024.0, 2048.0, 4096.0, // Hàng 2
-        256.0, 128.0, 64.0, 32.0, // Hàng 3 (Thấp nhất)
-        2.0, 4.0, 8.0, 16.0,
+        1073741824.0,
+        268435456.0,
+        67108864.0,
+        16777216.0, // Hàng 0: 4^15 -> 4^12
+        65536.0,
+        262144.0,
+        1048576.0,
+        4194304.0, // Hàng 1: 4^8  -> 4^11
+        16384.0,
+        4096.0,
+        1024.0,
+        256.0, // Hàng 2: 4^7  -> 4^4
+        1.0,
+        4.0,
+        16.0,
+        64.0, // Hàng 3: 4^0  -> 4^3
     ];
 
     // Chúng ta sẽ tính điểm cho 4 góc bằng cách xoay/đảo index truy cập
@@ -173,11 +184,13 @@ pub fn get_composite_potential(board: &[[Tile; 4]; 4], cfg: &TrainingConfig) -> 
     let phi_empty = calculate_empty(board);
     // let phi_disorder = calculate_disorder(board);
     let phi_snake = calculate_snake(board); // <--- MỚI
+                                            // Ép điểm Snake về tầm 0.0 -> 50.0 để PBT không hoảng hốt
+    let normalized_snake = phi_snake / 1073741824.0;
 
     // Potential = (Empty * W) + (Snake * W) - (Disorder * W)
     // Lưu ý: Snake trả về số rất to (hàng triệu), nên W_Snake thường chỉ cần rất nhỏ (0.001 -> 1.0)
 
-    (cfg.w_empty * phi_empty) + (cfg.w_snake * phi_snake)
+    (cfg.w_empty * phi_empty) + (cfg.w_snake * normalized_snake)
 }
 
 // Helper để lấy Rank (đã có ở bài trước)
