@@ -1,6 +1,7 @@
 use crate::adaptive_manager::AdaptiveManager;
 use crate::game::{Direction, Game};
 use crate::n_tuple_network::NTupleNetwork;
+use crate::pbt::TrainingConfig;
 use crate::potential_calculate::get_composite_potential;
 use crate::ui::{ConsoleUI, InputEvent};
 use pyo3::prelude::*;
@@ -18,6 +19,7 @@ pub struct ThreesEnv {
     prev_hub_count: u32,
     gamma: f32,
     adaptive_manager: AdaptiveManager,
+    pub config: TrainingConfig,
 }
 
 impl ThreesEnv {
@@ -35,7 +37,12 @@ impl ThreesEnv {
             prev_hub_count: stats.hub_count,
             gamma: gamma,
             adaptive_manager: AdaptiveManager::new(),
+            config: TrainingConfig::default(),
         }
+    }
+
+    pub fn set_config(&mut self, new_cfg: TrainingConfig) {
+        self.config = new_cfg;
     }
 
     pub fn set_gamma(&mut self, gamma: f32) {
@@ -77,7 +84,7 @@ impl ThreesEnv {
         };
 
         // 1. Lấy dữ liệu TRƯỚC khi move
-        let phi_old = get_composite_potential(&self.game.board);
+        let phi_old = get_composite_potential(&self.game.board, &self.config);
         let score_old = self.game.score; // <-- Lưu điểm cũ lại
 
         if self.game.can_move(dir) {
@@ -91,7 +98,7 @@ impl ThreesEnv {
             let game_over = self.game.check_game_over();
 
             // 3. Lấy dữ liệu SAU khi move
-            let phi_new = get_composite_potential(&self.game.board);
+            let phi_new = get_composite_potential(&self.game.board, &self.config);
             let score_new = self.game.score; // <-- Điểm mới (đã được update trong move_dir)
 
             let base_reward = (score_new - score_old) as f32;
@@ -257,7 +264,7 @@ impl ThreesEnv {
 
         // B. Tính Phi(S) & Score cũ: Dùng cho Reward Shaping
         // Lưu ý: get_composite_potential là hàm heuristic "lẩu thập cẩm" bác tự viết
-        let phi_old = get_composite_potential(&self.game.board);
+        let phi_old = get_composite_potential(&self.game.board, &self.config);
         let score_old = self.game.score;
 
         // 2. Thực hiện hành động (Môi trường chuyển sang S')
@@ -266,7 +273,7 @@ impl ThreesEnv {
 
         // 3. Lấy dữ liệu SAU khi đi (tại trạng thái S')
         // ---------------------------------------------------
-        let phi_new = get_composite_potential(&self.game.board);
+        let phi_new = get_composite_potential(&self.game.board, &self.config);
         let score_new = self.game.score;
 
         // 4. Tính toán Adaptive Reward (Phần quan trọng nhất)

@@ -128,65 +128,6 @@ impl Game {
         game
     }
 
-    pub fn calculate_potential_hybrid(&self) -> f32 {
-        let w_power = 1.0;
-        let w_life  = 10.0;  // Giá của 1 mạng sống
-        let w_order = 1.0;   // Giá của sự ngăn nắp
-
-        let mut growth_score = 0.0;
-        let mut empty_count = 0.0;
-        let mut disorder = 0.0;
-
-        for r in 0..4 {
-            for c in 0..4 {
-                let val = self.board[r][c].value;
-                if val == 0 {
-                    empty_count += 1.0;
-                    continue;
-                }
-
-                // 1. Tính GROWTH (Lũy thừa 3)
-                // Rank 0 (1,2) -> 3^0 = 1 (Nhẹ nhàng)
-                // Rank 1 (3)   -> 3^1 = 3
-                // Rank 8 (384) -> 3^8 = 6561
-                let mut rank = self.board[r][c].rank();
-                if rank == 21 || rank == 22 {
-                    rank = 0;
-                }
-
-                if rank >= 1 {
-                    growth_score += 3.0_f32.powf(rank as f32);
-                }
-
-                // 2. Tính DISORDER (Smoothness)
-                // So sánh Phải
-                if c < 3 {
-                    let right = self.board[r][c+1].value;
-                    if right != 0 {
-                        disorder += Self::calculate_diff(val, right);
-                    }
-                }
-                // So sánh Dưới
-                if r < 3 {
-                    let down = self.board[r+1][c].value;
-                    if down != 0 {
-                        disorder += Self::calculate_diff(val, down);
-                    }
-                }
-            }
-        }
-
-        // TỔNG HỢP:
-        // Growth là chủ đạo (về late game).
-        // Life là nền tảng (về early game).
-        // Disorder là bộ lọc nhiễu.
-        let potential = (w_power * growth_score) 
-                    + (w_life * empty_count) 
-                    - (w_order * disorder);
-
-        return potential;
-    }
-
     // Hàm phụ trợ (như cũ)
     fn calculate_diff(a: u32, b: u32) -> f32 {
         if (a == 1 && b == 2) || (a == 2 && b == 1) { return 0.0; } // Cặp đôi hoàn hảo
