@@ -3,3 +3,4 @@
 /tensorboard_threes
 /logs_ppo_threes_resnet
 /logs_ppo_threes_resnet_old
+*.dat

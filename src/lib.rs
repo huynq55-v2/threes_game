@@ -1,7 +1,9 @@
 use pyo3::prelude::*;
 
+pub mod adaptive_manager;
 pub mod game;
 pub mod n_tuple_network;
+pub mod potential_calculate;
 pub mod pseudo_list;
 pub mod python_module;
 pub mod rarity;

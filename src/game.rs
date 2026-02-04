@@ -305,11 +305,21 @@ impl Game {
                 if val >= 3 {
                     let rank = get_rank_from_value(val);
                     // 3^rank
-                    total_score += 3u32.pow(rank as u32);
+                    total_score += 3_u32.pow(rank as u32);
                 }
             }
         }
         self.score = total_score;
+    }
+
+    pub fn get_board_flat(&self) -> [u32; 16] {
+        let mut flat = [0u32; 16];
+        for r in 0..4 {
+            for c in 0..4 {
+                flat[r * 4 + c] = self.board[r][c].value;
+            }
+        }
+        flat
     }
 
     pub fn get_next_value(&mut self) -> u32 {

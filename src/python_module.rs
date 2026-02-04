@@ -1,5 +1,7 @@
+use crate::adaptive_manager::AdaptiveManager;
 use crate::game::{Direction, Game};
 use crate::n_tuple_network::NTupleNetwork;
+use crate::potential_calculate::get_composite_potential;
 use crate::ui::{ConsoleUI, InputEvent};
 use pyo3::prelude::*;
 use rand::Rng as _;
@@ -15,10 +17,11 @@ pub struct ThreesEnv {
     prev_pre_max_count: u32,
     prev_hub_count: u32,
     gamma: f32,
+    adaptive_manager: AdaptiveManager,
 }
 
 impl ThreesEnv {
-    pub fn new() -> Self {
+    pub fn new(gamma: f32) -> Self {
         let game = Game::new();
         // Initialize stats from the new game state
         let stats = game.get_game_stats();
@@ -30,7 +33,8 @@ impl ThreesEnv {
             prev_max_count: stats.max_count,
             prev_pre_max_count: stats.pre_max_count,
             prev_hub_count: stats.hub_count,
-            gamma: 0.99,
+            gamma: gamma,
+            adaptive_manager: AdaptiveManager::new(),
         }
     }
 
@@ -52,55 +56,59 @@ impl ThreesEnv {
         self.prev_pre_max_count = stats.pre_max_count;
         self.prev_hub_count = stats.hub_count;
 
-        (self.get_board_flat(), self.game.hints.clone())
+        (self.get_board_flat().to_vec(), self.game.hints.clone())
     }
 
     // Return signature: (Board, Reward, Done, Hints)
     fn step(&mut self, action: u32) -> (Vec<u32>, f32, bool, Vec<u32>) {
-        // 1. Map Action
         let dir = match action {
             0 => Direction::Up,
             1 => Direction::Down,
             2 => Direction::Left,
             3 => Direction::Right,
-            _ => return (self.get_board_flat(), -10.0, true, self.game.hints.clone()),
+            _ => {
+                return (
+                    self.get_board_flat().to_vec(),
+                    -10.0,
+                    true,
+                    self.game.hints.clone(),
+                )
+            }
         };
 
-        let phi_old = self.game.calculate_potential_hybrid();
+        // 1. Lấy dữ liệu TRƯỚC khi move
+        let phi_old = get_composite_potential(&self.game.board);
+        let score_old = self.game.score; // <-- Lưu điểm cũ lại
 
-        // 3. Thực hiện Move
         if self.game.can_move(dir) {
-            // Lưu history cho Undo nếu cần
             self.history.push(self.game.clone());
             self.future_history.clear();
 
-            let (_, merged_ranks) = self.game.move_dir(dir);
+            // 2. Thực hiện Move
+            // Lưu ý: biến đầu tiên là 'moved' (bool), ko phải điểm
+            let (_, _) = self.game.move_dir(dir);
+
             let game_over = self.game.check_game_over();
 
-            // let phi_new = self.game.calculate_potential_hybrid();
+            // 3. Lấy dữ liệu SAU khi move
+            let phi_new = get_composite_potential(&self.game.board);
+            let score_new = self.game.score; // <-- Điểm mới (đã được update trong move_dir)
 
-            // let shaping_reward = (self.gamma * phi_new) - phi_old;
+            let base_reward = (score_new - score_old) as f32;
+            let gamma = self.gamma;
+            let raw_shaping = (gamma * phi_new) - phi_old;
 
-            // let base_survival = 5.0;
-
-            // let total_reward = base_survival + shaping_reward;
-
-            let mut reward = 0.0;
-            for rank in merged_ranks {
-                // Theo quy ước của bác: Rank 1 (số 3) = 3^1 điểm
-                if rank > 0 {
-                    reward += 3.0_f32.powi(rank as i32);
-                }
-            }
+            let final_reward = self
+                .adaptive_manager
+                .update_and_scale(base_reward, raw_shaping);
 
             (
-                self.get_board_flat(),
-                reward,
+                self.get_board_flat().to_vec(),
+                final_reward,
                 game_over,
                 self.game.hints.clone(),
             )
         } else {
-            // Invalid move logic (Maskable PPO will mask this usually, but handled here just in case)
             unreachable!()
         }
     }
@@ -115,7 +123,7 @@ impl ThreesEnv {
 
         // Trả về dữ liệu trạng thái sau khi đã lùi lại
         Ok((
-            self.get_board_flat(),
+            self.get_board_flat().to_vec(),
             0.0, // Reward của undo thường là 0
             self.game.check_game_over(),
             self.game.hints.clone(),
@@ -129,7 +137,7 @@ impl ThreesEnv {
         }
 
         Ok((
-            self.get_board_flat(),
+            self.get_board_flat().to_vec(),
             0.0,
             self.game.check_game_over(),
             self.game.hints.clone(),
@@ -205,35 +213,81 @@ impl ThreesEnv {
         best_action
     }
 
-    pub fn train_step(
-        &mut self,
-        brain: &mut NTupleNetwork,
-        action: u32,
-        episode: u32,
-        total_episodes: u32,
-    ) -> (f32, f32) {
-        // 1. Lấy trạng thái S hiện tại
-        let empty_before = self.game.count_tiles_with_value(0);
+    pub fn get_best_action_greedy(&mut self, brain: &NTupleNetwork) -> u32 {
+        let mut best_action = 0; // Mặc định
+        let mut best_value = -f32::MAX;
+        let valid_actions = self.game.get_valid_moves();
+
+        if valid_actions.is_empty() {
+            return 0; // Hoặc trả về random nếu muốn
+        }
+
+        // Duyệt qua các nước đi hợp lệ
+        for &action_dir in &valid_actions {
+            // Clone game ra để thử nước đi
+            let mut virtual_game = self.game.clone();
+            virtual_game.move_dir(action_dir); // Đi thử
+
+            // Lấy board phẳng sau khi đi
+            let board_flat = virtual_game.get_board_flat();
+            // Dự đoán giá trị bằng mạng Neural
+            let val = brain.predict(&board_flat.try_into().unwrap());
+
+            if val > best_value {
+                best_value = val;
+                best_action = match action_dir {
+                    Direction::Up => 0,
+                    Direction::Down => 1,
+                    Direction::Left => 2,
+                    Direction::Right => 3,
+                };
+            }
+        }
+        best_action
+    }
+
+    pub fn train_step(&mut self, brain: &mut NTupleNetwork, action: u32, alpha: f32) -> (f32, f32) {
+        // 1. Lấy dữ liệu TRƯỚC khi đi (tại trạng thái S)
+        // ---------------------------------------------------
         let s_flat_vec = self.get_board_flat();
         let s_flat: [u32; 16] = s_flat_vec.try_into().unwrap_or([0u32; 16]);
 
-        // Predict tự động tính tổng điểm của tất cả các Tuple (bao gồm 8 hướng)
+        // A. Tính V(S): Giá trị dự đoán của Mạng Neural (Cái cần update)
         let v_s = brain.predict(&s_flat);
 
-        // 2. Thực hiện hành động
-        let (_next_flat_vec, r_env, done, _) = self.step(action);
+        // B. Tính Phi(S) & Score cũ: Dùng cho Reward Shaping
+        // Lưu ý: get_composite_potential là hàm heuristic "lẩu thập cẩm" bác tự viết
+        let phi_old = get_composite_potential(&self.game.board);
+        let score_old = self.game.score;
 
-        // 3. Tính Reward Shaping (W giảm dần)
-        let empty_after = self.game.count_tiles_with_value(0);
-        let delta_empty = empty_after as f32 - empty_before as f32;
+        // 2. Thực hiện hành động (Môi trường chuyển sang S')
+        // ---------------------------------------------------
+        let (_, _, done, _) = self.step(action);
 
-        let max_w = 50.0;
-        let decay_limit = total_episodes as f32 * 0.8;
-        let w = (max_w * (1.0 - (episode as f32 / decay_limit))).max(0.0);
+        // 3. Lấy dữ liệu SAU khi đi (tại trạng thái S')
+        // ---------------------------------------------------
+        let phi_new = get_composite_potential(&self.game.board);
+        let score_new = self.game.score;
 
-        let shaped_reward = r_env + (w * delta_empty);
+        // 4. Tính toán Adaptive Reward (Phần quan trọng nhất)
+        // ---------------------------------------------------
 
-        // 4. Lấy trạng thái S' (Next State) và tính TD Target
+        // Base Reward: Điểm thực tế kiếm được
+        let base_reward = (score_new - score_old) as f32;
+
+        // Raw Shaping: Chênh lệch tiềm năng (có nhân Gamma)
+        // Gamma phải khớp với gamma của Brain (thường là 0.99)
+        let gamma = self.gamma;
+        let raw_shaping = (gamma * phi_new) - phi_old;
+
+        // CÂN BẰNG ĐỘNG: Gọi struct AdaptiveReward để tính Final Reward
+        // Giả sử bác đã khai báo self.adaptive trong struct ThreesEnv
+        let final_reward = self
+            .adaptive_manager
+            .update_and_scale(base_reward, raw_shaping);
+
+        // 5. Tính V(S') (TD Target)
+        // ---------------------------------------------------
         let v_s_next = if done {
             0.0
         } else {
@@ -242,25 +296,18 @@ impl ThreesEnv {
             brain.predict(&s_next_flat)
         };
 
-        // 5. Tính sai số TD Error
-        let td_error = shaped_reward + brain.gamma * v_s_next - v_s;
+        // 6. Tính TD Error & Update Weights
+        // ---------------------------------------------------
 
-        // 6. Cập nhật trọng số (QUAN TRỌNG)
-        // Vì mạng chứa nhiều Tuple (do nhân bản 8 hướng), ta phải chia nhỏ sai số
-        // để tránh việc cập nhật quá đà (Over-correction).
-        // brain.tuples.len() hiện tại đã bao gồm cả nhân tử 8 rồi.
+        // Công thức TD: Error = (Reward + Gamma * V(S')) - V(S)
+        let td_error = final_reward + gamma * v_s_next - v_s;
+
+        // Chia nhỏ error cho số lượng Tuple để tránh over-correction
         let num_tuples = brain.tuples.len() as f32;
-        let split_delta = (td_error * brain.alpha) / num_tuples;
-
-        // Cập nhật 1 lần duy nhất trên bàn cờ gốc
-        // Hàm update_weights sẽ tự động phân phối split_delta vào tất cả các tuple đang kích hoạt
+        let split_delta = (td_error * alpha) / num_tuples; // Dùng biến alpha tham số
         brain.update_weights(&s_flat, split_delta);
 
-        (td_error.abs(), w)
-    }
-
-    fn get_hint_set(&self) -> Vec<u32> {
-        self.game.hints.clone()
+        (td_error.abs(), final_reward)
     }
 
     pub fn get_symmetries(&self) -> Vec<[u32; 16]> {
@@ -279,14 +326,9 @@ impl ThreesEnv {
         result
     }
 
-    fn get_board_flat(&self) -> Vec<u32> {
-        let mut flat = Vec::with_capacity(16);
-        for r in 0..4 {
-            for c in 0..4 {
-                flat.push(self.game.board[r][c].value);
-            }
-        }
-        flat
+    pub fn get_board_flat(&self) -> [u32; 16] {
+        // Ủy quyền trực tiếp cho Game xử lý
+        self.game.get_board_flat()
     }
 
     fn score(&self) -> u32 {
