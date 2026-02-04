@@ -1,75 +1,5 @@
 use crate::{pbt::TrainingConfig, tile::Tile};
 
-pub fn calculate_disorder(board: &[[Tile; 4]; 4]) -> f32 {
-    let mut total_penalty = 0.0;
-
-    for r in 0..4 {
-        for c in 0..4 {
-            let val = board[r][c].value;
-            if val == 0 {
-                continue;
-            }
-
-            // Helper: 1,2 -> Rank 0; 3->1; 6->2 ...
-            let get_calc_rank = |v: u32| -> i32 {
-                if v <= 2 {
-                    0
-                } else {
-                    ((v as f32 / 3.0).log2() as i32) + 1
-                }
-            };
-
-            let rank_curr = get_calc_rank(val);
-
-            // Helper check neighbor
-            let check_neighbor = |n_val: u32| -> f32 {
-                if n_val == 0 {
-                    return 0.0;
-                } // Cạnh ô trống thì ok, ko phạt
-
-                // 1. Logic 1 và 2 (Giữ nguyên)
-                if val <= 2 && n_val <= 2 {
-                    if val == n_val {
-                        return 27.0;
-                    }
-                    // 1-1 hoặc 2-2: Phạt nặng
-                    else {
-                        return 0.0;
-                    } // 1-2: Ngon
-                }
-
-                // Logic số thường với 1,2 (Ví dụ 3 đứng cạnh 1) -> Rank 1 vs 0 -> Diff 1 -> OK
-                if (val <= 2 && n_val > 2) || (val > 2 && n_val <= 2) {
-                    let rank_n = get_calc_rank(n_val);
-                    let diff = (rank_curr - rank_n).abs();
-                    // Phạt nhẹ thôi vì số nhỏ dễ sửa
-                    return 3.0_f32.powi(diff);
-                }
-
-                // 2. Logic High Rank (SỬA Ở ĐÂY)
-                let rank_neighbor = get_calc_rank(n_val);
-                let diff = (rank_curr - rank_neighbor).abs();
-
-                // Công thức cũ: 3^diff
-                // Công thức mới: (Rank_Current + Rank_Neighbor) * 3^diff
-                // Ý nghĩa: Sai lầm ở Rank càng to, hình phạt càng nhân lên gấp bội.
-                let magnitude_penalty = (rank_curr + rank_neighbor) as f32;
-
-                magnitude_penalty * 3.0_f32.powi(diff)
-            };
-
-            // So sánh Phải & Dưới
-            if c < 3 {
-                total_penalty += check_neighbor(board[r][c + 1].value);
-            }
-            if r < 3 {
-                total_penalty += check_neighbor(board[r + 1][c].value);
-            }
-        }
-    }
-    total_penalty
-}
-
 fn calculate_empty(board: &[[Tile; 4]; 4]) -> f32 {
     let mut count = 0;
     for r in 0..4 {
@@ -180,17 +110,90 @@ pub fn calculate_snake(board: &[[Tile; 4]; 4]) -> f32 {
     max_score
 }
 
+pub fn calculate_merge_potential(board: &[[Tile; 4]; 4]) -> f32 {
+    let mut merges = 0.0;
+    for r in 0..4 {
+        for c in 0..4 {
+            let val = board[r][c].value;
+            if val == 0 {
+                continue;
+            }
+
+            // Check bên phải
+            if c < 3 {
+                let right = board[r][c + 1].value;
+                if can_merge(val, right) {
+                    merges += 1.0;
+                }
+            }
+            // Check bên dưới
+            if r < 3 {
+                let down = board[r + 1][c].value;
+                if can_merge(val, down) {
+                    merges += 1.0;
+                }
+            }
+        }
+    }
+    merges // Càng nhiều càng tốt
+}
+
+pub fn calculate_disorder(board: &[[Tile; 4]; 4]) -> f32 {
+    let mut penalty = 0.0;
+    for r in 0..4 {
+        for c in 0..4 {
+            let val = board[r][c].value;
+            if val == 0 {
+                continue;
+            }
+            let rank_curr = get_rank(val);
+
+            // Check neighbor (Right & Down)
+            let check = |n_val: u32| -> f32 {
+                if n_val == 0 {
+                    return 0.0;
+                }
+                let rank_n = get_rank(n_val);
+
+                // Tính độ chênh lệch Rank
+                let diff = (rank_curr - rank_n).abs();
+
+                // Nếu chênh lệch > 1 thì bắt đầu phạt lũy thừa
+                if diff > 1.0 {
+                    // Ví dụ: Rank 8 (384) cạnh Rank 1 (3) -> Diff 7 -> Phạt nặng
+                    return diff.powf(2.5);
+                }
+                0.0
+            };
+
+            if c < 3 {
+                penalty += check(board[r][c + 1].value);
+            }
+            if r < 3 {
+                penalty += check(board[r + 1][c].value);
+            }
+        }
+    }
+    penalty // Càng thấp càng tốt (nên w_disorder sẽ là số âm hoặc trừ đi)
+}
+
 pub fn get_composite_potential(board: &[[Tile; 4]; 4], cfg: &TrainingConfig) -> f32 {
     let phi_empty = calculate_empty(board);
-    // let phi_disorder = calculate_disorder(board);
-    let phi_snake = calculate_snake(board); // <--- MỚI
-                                            // Ép điểm Snake về tầm 0.0 -> 50.0 để PBT không hoảng hốt
-    let normalized_snake = phi_snake / 1073741824.0;
+    let phi_snake = calculate_snake(board) / 1073741824.0; // Normalized Snake
 
-    // Potential = (Empty * W) + (Snake * W) - (Disorder * W)
-    // Lưu ý: Snake trả về số rất to (hàng triệu), nên W_Snake thường chỉ cần rất nhỏ (0.001 -> 1.0)
+    // 1. Thêm Merge Potential (Normalize nhẹ vì max khoảng 24 cặp)
+    let phi_merge = calculate_merge_potential(board) / 10.0;
 
-    (cfg.w_empty * phi_empty) + (cfg.w_snake * normalized_snake)
+    // 2. Thêm Disorder (Normalize vì có thể rất to)
+    // Chia 100 để nó về tầm 0.x -> 5.0
+    let phi_disorder = calculate_disorder(board) / 100.0;
+
+    // Tổng hợp:
+    // Empty và Snake là CỘNG
+    // Merge là CỘNG
+    // Disorder là TRỪ (vì là hình phạt)
+    (cfg.w_empty * phi_empty) + (cfg.w_snake * phi_snake) + (cfg.w_merge * phi_merge)
+        - (cfg.w_disorder * phi_disorder)
 }
 
 // Helper để lấy Rank (đã có ở bài trước)
@@ -200,4 +203,18 @@ fn get_rank(val: u32) -> f32 {
     } else {
         (val as f32 / 3.0).log2() + 1.0
     }
+}
+
+// Helper kiểm tra luật Threes!
+fn can_merge(a: u32, b: u32) -> bool {
+    if a == 0 || b == 0 {
+        return false;
+    } // Không tính ô trống là merge
+    if (a == 1 && b == 2) || (a == 2 && b == 1) {
+        return true;
+    }
+    if a > 2 && a == b {
+        return true;
+    }
+    false
 }

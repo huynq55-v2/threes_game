@@ -1,22 +1,28 @@
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct TrainingConfig {
+    #[serde(default)]
     pub w_empty: f32,
-    // pub w_disorder: f32,
-    // Sau này thích thêm gì thì thêm vào đây, không sợ vỡ code
-    // pub w_snake: f32,
-    // pub w_merge: f32,
+    #[serde(default)]
     pub w_snake: f32,
+
+    // Thêm 2 em mới
+    #[serde(default)]
+    pub w_merge: f32, // Khởi tạo tầm 10.0
+    #[serde(default)]
+    pub w_disorder: f32, // Khởi tạo tầm 5.0
 }
 
 impl Default for TrainingConfig {
     fn default() -> Self {
         Self {
             w_empty: 50.0,
-            // w_disorder: 1.0,
             w_snake: 50.0,
+            w_merge: 15.0,   // Khuyến khích gộp bài
+            w_disorder: 5.0, // Phạt sự lộn xộn (số to cạnh số bé)
         }
     }
 }
@@ -58,29 +64,22 @@ impl PBTManager {
         let best_config = sorted_pop.first().unwrap().1 .1;
         let worst_score = sorted_pop.last().unwrap().1 .0;
 
-        // 3. Logic Tiến Hóa
+        // 3. Logic Tiến Hóa: Nếu luồng hiện tại quá tệ so với luồng kém nhất (hoặc trung bình)
+        // Ở đây bác dùng logic: Nếu điểm <= worst * 1.05 (tức là nằm trong nhóm kém) thì copy thằng giỏi nhất
         if current_score <= worst_score * 1.05 {
             let mut new_config = best_config;
             let mut rng = rand::rng();
 
             // --- MUTATION LOGIC ---
 
-            // Đột biến w_empty
+            // 1. Đột biến Empty
             if rng.random_bool(0.3) {
                 new_config.w_empty *= rng.random_range(0.8..1.2);
                 new_config.w_empty = new_config.w_empty.clamp(1.0, 500.0);
             }
 
-            // Đột biến w_disorder
-            // if rng.random_bool(0.3) {
-            //     new_config.w_disorder *= rng.random_range(0.8..1.2);
-            //     new_config.w_disorder = new_config.w_disorder.clamp(0.1, 20.0);
-            // }
-
-            // Đột biến w_snake (MỚI)
-            // Snake rất mạnh nên cho phép range rộng hơn tí
+            // 2. Đột biến Snake
             if rng.random_bool(0.3) {
-                // Nếu đang bằng 0 thì kích hoạt nó lên số nhỏ
                 if new_config.w_snake < 0.001 {
                     new_config.w_snake = rng.random_range(0.1..1.0);
                 } else {
@@ -89,9 +88,30 @@ impl PBTManager {
                 new_config.w_snake = new_config.w_snake.clamp(0.0, 1000.0);
             }
 
+            // 3. Đột biến Merge (MỚI)
+            if rng.random_bool(0.3) {
+                if new_config.w_merge < 0.001 {
+                     new_config.w_merge = rng.random_range(1.0..5.0);
+                } else {
+                    new_config.w_merge *= rng.random_range(0.8..1.2);
+                }
+                new_config.w_merge = new_config.w_merge.clamp(0.0, 200.0);
+            }
+
+            // 4. Đột biến Disorder (MỚI)
+            if rng.random_bool(0.3) {
+                if new_config.w_disorder < 0.001 {
+                    new_config.w_disorder = rng.random_range(0.5..2.0);
+                } else {
+                    new_config.w_disorder *= rng.random_range(0.8..1.2);
+                }
+                new_config.w_disorder = new_config.w_disorder.clamp(0.0, 100.0);
+            }
+
             println!(
-                "🧬 [PBT] Thread {} TIẾN HÓA! Score:{:.0} -> Empty:{:.1}, Snake:{:.1}",
-                thread_id, current_score, new_config.w_empty, new_config.w_snake
+                "🧬 [PBT] Thread {} TIẾN HÓA! Sc:{:.0} -> Emp:{:.1}, Snk:{:.1}, Mrg:{:.1}, Dis:{:.1}",
+                thread_id, current_score, 
+                new_config.w_empty, new_config.w_snake, new_config.w_merge, new_config.w_disorder
             );
 
             return (true, new_config);

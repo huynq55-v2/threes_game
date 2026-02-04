@@ -170,8 +170,7 @@ fn run_training_parallel(
     // 2. KHỞI TẠO PBT_CONFIG (Xử lý cả Resume và Train lần đầu)
     let mut pbt_config = if thread_id == 0 {
         TrainingConfig {
-            // Nếu não có giá trị (>0) thì lấy giá trị đó (Resume)
-            // Nếu không (lần đầu) thì lấy số mặc định an toàn (ví dụ 40.0 và 50.0)
+            // Thread 0: Giữ nguyên giá trị cũ để làm chuẩn (Anchor)
             w_empty: if brain.w_empty > 0.0 {
                 brain.w_empty
             } else {
@@ -182,18 +181,43 @@ fn run_training_parallel(
             } else {
                 50.0
             },
+
+            // Nếu file save cũ chưa có merge/disorder (load lên = 0) thì gán mặc định
+            w_merge: if brain.w_merge > 0.0 {
+                brain.w_merge
+            } else {
+                15.0
+            },
+            w_disorder: if brain.w_disorder > 0.0 {
+                brain.w_disorder
+            } else {
+                5.0
+            },
         }
     } else {
-        // Các thread khác: Nếu não rỗng thì random rộng, nếu có não thì biến động quanh não
-        let (base_empty, base_snake) = if brain.w_empty > 0.0 {
-            (brain.w_empty, brain.w_snake)
+        // Các thread khác: Tạo biến động xung quanh giá trị gốc
+        let (base_empty, base_snake, base_merge, base_disorder) = if brain.w_empty > 0.0 {
+            (
+                brain.w_empty,
+                brain.w_snake,
+                brain.w_merge,
+                brain.w_disorder,
+            )
         } else {
-            (rng.random_range(30.0..60.0), rng.random_range(20.0..80.0))
+            // Nếu chưa có não, random khởi điểm rộng ra một chút
+            (
+                rng.random_range(30.0..60.0),
+                rng.random_range(20.0..80.0),
+                rng.random_range(5.0..25.0), // Merge
+                rng.random_range(1.0..10.0), // Disorder
+            )
         };
 
         TrainingConfig {
             w_empty: (base_empty * rng.random_range(0.8..1.2)).clamp(1.0, 500.0),
             w_snake: (base_snake * rng.random_range(0.8..1.2)).clamp(0.0, 1000.0),
+            w_merge: (base_merge * rng.random_range(0.8..1.2)).clamp(0.0, 200.0),
+            w_disorder: (base_disorder * rng.random_range(0.8..1.2)).clamp(0.0, 100.0),
         }
     };
 
@@ -261,12 +285,14 @@ fn run_training_parallel(
             // Log mỗi 500 ván của Thread 0 (để theo dõi tiến độ)
             if local_ep % 500 == 0 {
                 println!(
-                    "Ep: {:>8} | Err: {:.4} | Sc: {:>5.0} | Emp: {:.1} | Snk: {:.1} | Alp: {:.5}",
+                    "Ep: {:>8} | Err: {:.4} | Sc: {:>5.0} | Emp: {:.1} | Snk: {:.1} | Mrg: {:.1} | Dis: {:.1} | Alp: {:.5}",
                     current_global_ep,
                     running_error,
                     running_score,
                     effective_config.w_empty,
                     effective_config.w_snake,
+                    effective_config.w_merge,
+                    effective_config.w_disorder,
                     current_alpha
                 );
             }
@@ -282,6 +308,8 @@ fn run_training_parallel(
                 // Cập nhật config mới nhất vào não để mang đi save
                 brain.w_empty = pbt_config.w_empty;
                 brain.w_snake = pbt_config.w_snake;
+                brain.w_merge = pbt_config.w_merge;
+                brain.w_disorder = pbt_config.w_disorder;
 
                 if let Err(e) = brain.export_to_msgpack(&filename) {
                     eprintln!("❌ Lỗi lưu file: {}", e);

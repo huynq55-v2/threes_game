@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufReader, BufWriter, Write},
+    io::{BufReader, BufWriter},
 };
 
 use serde::{Deserialize, Serialize};
@@ -22,9 +22,14 @@ pub struct NTupleNetwork {
     pub alpha: f32,
     pub gamma: f32,
 
+    #[serde(default)]
     pub w_empty: f32,
+    #[serde(default)]
     pub w_snake: f32,
+    #[serde(default)]
     pub w_disorder: f32,
+    #[serde(default)]
+    pub w_merge: f32,
 }
 
 impl NTupleNetwork {
@@ -37,6 +42,7 @@ impl NTupleNetwork {
             w_empty: 0.0,
             w_snake: 0.0,
             w_disorder: 0.0,
+            w_merge: 0.0,
         };
 
         network.add_shared_snake();
