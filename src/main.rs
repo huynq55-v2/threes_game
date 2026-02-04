@@ -149,8 +149,8 @@ fn run_training_parallel(
     let mut pbt_config = TrainingConfig::default();
     if thread_id != 0 {
         // Random khởi tạo để đa dạng hóa quần thể
-        pbt_config.w_empty = rng.gen_range(30.0..80.0);
-        pbt_config.w_snake = rng.gen_range(0.0..0.5);
+        pbt_config.w_empty = rng.random_range(30.0..80.0);
+        pbt_config.w_snake = rng.random_range(0.0..0.5);
     }
 
     // --- VÒNG LẶP CHÍNH ---
@@ -238,6 +238,10 @@ fn run_training_parallel(
         // 7. SAVE CHECKPOINT (MessagePack)
         if thread_id == 0 && current_global_ep > 0 && current_global_ep % 1_000_000 == 0 {
             let filename = format!("brain_ep_{}.msgpack", current_global_ep); // Đổi đuôi file cho dễ nhớ
+
+            brain.w_empty = local_config.w_empty;
+            brain.w_snake = local_config.w_snake;
+
             if let Err(e) = brain.export_to_msgpack(&filename) {
                 eprintln!("❌ Lỗi lưu file {}: {}", filename, e);
             } else {

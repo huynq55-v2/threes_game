@@ -21,6 +21,10 @@ pub struct NTupleNetwork {
     pub weights: Vec<Vec<f32>>,   // Chỉ có 12 bảng dữ liệu thôi
     pub alpha: f32,
     pub gamma: f32,
+
+    pub w_empty: f32,
+    pub w_snake: f32,
+    pub w_disorder: f32,
 }
 
 impl NTupleNetwork {
@@ -30,6 +34,9 @@ impl NTupleNetwork {
             weights: Vec::new(),
             alpha,
             gamma,
+            w_empty: 0.0,
+            w_snake: 0.0,
+            w_disorder: 0.0,
         };
 
         network.add_shared_snake();
