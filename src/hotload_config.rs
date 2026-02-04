@@ -6,6 +6,7 @@ pub struct HotLoadConfig {
     pub w_empty_override: f32,
     pub w_disorder_override: f32,
     pub w_snake_override: f32,
+    pub w_merge_override: f32,
     pub alpha_override: f32,
 }
 
@@ -15,6 +16,7 @@ impl Default for HotLoadConfig {
             w_empty_override: -1.0,
             w_disorder_override: -1.0,
             w_snake_override: -1.0,
+            w_merge_override: -1.0,
             alpha_override: -1.0,
         }
     }

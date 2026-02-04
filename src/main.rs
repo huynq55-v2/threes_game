@@ -237,6 +237,13 @@ fn run_training_parallel(
             effective_config.w_snake = current_hot.w_snake_override;
         }
 
+        if current_hot.w_merge_override > 0.0 {
+            effective_config.w_merge = current_hot.w_merge_override;
+        }
+        if current_hot.w_disorder_override > 0.0 {
+            effective_config.w_disorder = current_hot.w_disorder_override;
+        }
+
         // Áp dụng config vào môi trường chơi game
         env.set_config(effective_config);
 
