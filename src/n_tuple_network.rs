@@ -1,15 +1,21 @@
 use std::{
     fs::File,
-    io::{BufWriter, Write},
+    io::{BufReader, BufWriter, Write},
 };
+
+use serde::{Deserialize, Serialize};
+
+use rmp_serde::{Deserializer, Serializer};
 
 use crate::game::Game;
 
+#[derive(Serialize, Deserialize)]
 pub struct TupleConfig {
     pub indices: Vec<usize>, // Các ô trên bàn cờ (ví dụ: [0,1,2,3,7])
     pub weight_index: usize, // Trỏ đến bảng weights số mấy (ví dụ: bảng số 0)
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct NTupleNetwork {
     pub tuples: Vec<TupleConfig>, // Danh sách 96 con rắn
     pub weights: Vec<Vec<f32>>,   // Chỉ có 12 bảng dữ liệu thôi
@@ -30,6 +36,31 @@ impl NTupleNetwork {
 
         // network.init_weights();
         network
+    }
+
+    /// Lưu file chuẩn MessagePack (Để Android đọc được)
+    pub fn export_to_msgpack(&self, filename: &str) -> std::io::Result<()> {
+        let file = File::create(filename)?;
+        let mut writer = BufWriter::new(file);
+
+        // Serialize struct thành MessagePack binary
+        let mut serializer = Serializer::new(&mut writer);
+        self.serialize(&mut serializer)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+
+        Ok(())
+    }
+
+    // Hàm load để Resume training
+    pub fn load_from_msgpack(filename: &str) -> std::io::Result<Self> {
+        let file = File::open(filename)?;
+        let reader = BufReader::new(file);
+        let mut deserializer = Deserializer::new(reader);
+
+        let network: NTupleNetwork = Deserialize::deserialize(&mut deserializer)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+        Ok(network)
     }
 
     fn add_symmetries_shared(&mut self, base_tuple: Vec<usize>, weight_id: usize) {
@@ -102,58 +133,6 @@ impl NTupleNetwork {
         }
     }
 
-    // Hàm load để bác dùng sau này
-    pub fn load_from_binary(path: &str, alpha: f32, gamma: f32) -> std::io::Result<Self> {
-        use std::io::{BufReader, Read};
-        let file = File::open(path)?;
-        let mut reader = BufReader::new(file);
-
-        // 1. Đọc số lượng tables từ file
-        let mut head = [0u8; 4];
-        reader.read_exact(&mut head)?;
-        let num_tables = u32::from_le_bytes(head) as usize;
-
-        // 2. Khởi tạo một mạng mới với cấu trúc Tuples hiện tại trong code
-        let mut net = Self::new(alpha, gamma);
-
-        // Code mới (ĐÚNG):
-        if net.weights.len() != num_tables {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "Mismatch: File has {} tables, but code expects {} weight tables",
-                    num_tables,
-                    net.weights.len() // So sánh với số lượng bảng weights thực tế
-                ),
-            ));
-        }
-
-        // 4. Đọc dữ liệu Weights và nạp vào net.weights
-        net.weights.clear();
-        for _ in 0..num_tables {
-            reader.read_exact(&mut head)?;
-            let table_size = u32::from_le_bytes(head) as usize;
-
-            let mut table = vec![0.0f32; table_size];
-            // Đọc toàn bộ bảng float dưới dạng byte rồi chuyển đổi
-            let mut float_buf = vec![0u8; table_size * 4];
-            reader.read_exact(&mut float_buf)?;
-
-            for i in 0..table_size {
-                let bytes = [
-                    float_buf[i * 4],
-                    float_buf[i * 4 + 1],
-                    float_buf[i * 4 + 2],
-                    float_buf[i * 4 + 3],
-                ];
-                table[i] = f32::from_le_bytes(bytes);
-            }
-            net.weights.push(table);
-        }
-
-        Ok(net)
-    }
-
     pub fn encode_tile(value: u32) -> usize {
         if value == 0 {
             return 0;
@@ -219,25 +198,5 @@ impl NTupleNetwork {
             // Lưu ý: Nhiều tuple sẽ cùng cộng dồn vào 1 bảng này -> Học siêu nhanh
             self.weights[tuple.weight_index][idx] += delta;
         }
-    }
-
-    pub fn export_to_binary(&self, path: &str) -> std::io::Result<()> {
-        let file = File::create(path)?;
-        let mut writer = BufWriter::new(file);
-
-        // 1. Ghi số lượng bảng trọng số (Tuples count)
-        writer.write_all(&(self.weights.len() as u32).to_le_bytes())?;
-
-        // 2. Ghi dữ liệu từng bảng
-        for table in &self.weights {
-            // Ghi kích thước bảng
-            writer.write_all(&(table.len() as u32).to_le_bytes())?;
-            // Ghi từng giá trị float 32-bit (Little Endian khớp với Java/Android)
-            for &weight in table {
-                writer.write_all(&weight.to_le_bytes())?;
-            }
-        }
-        writer.flush()?;
-        Ok(())
     }
 }

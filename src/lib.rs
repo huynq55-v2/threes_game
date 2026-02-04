@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 
 pub mod adaptive_manager;
 pub mod game;
+pub mod hotload_config;
 pub mod n_tuple_network;
 pub mod pbt;
 pub mod potential_calculate;
