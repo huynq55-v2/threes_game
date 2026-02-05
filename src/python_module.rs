@@ -17,13 +17,13 @@ pub struct ThreesEnv {
     pub prev_max_count: u32,
     prev_pre_max_count: u32,
     prev_hub_count: u32,
-    gamma: f32,
+    gamma: f64,
     adaptive_manager: AdaptiveManager,
     pub config: TrainingConfig,
 }
 
 impl ThreesEnv {
-    pub fn new(gamma: f32) -> Self {
+    pub fn new(gamma: f64) -> Self {
         let game = Game::new();
         // Initialize stats from the new game state
         let stats = game.get_game_stats();
@@ -45,7 +45,7 @@ impl ThreesEnv {
         self.config = new_cfg;
     }
 
-    pub fn set_gamma(&mut self, gamma: f32) {
+    pub fn set_gamma(&mut self, gamma: f64) {
         self.gamma = gamma;
     }
 
@@ -67,7 +67,7 @@ impl ThreesEnv {
     }
 
     // Return signature: (Board, Reward, Done, Hints)
-    fn step(&mut self, action: u32) -> (Vec<u32>, f32, bool, Vec<u32>) {
+    fn step(&mut self, action: u32) -> (Vec<u32>, f64, bool, Vec<u32>) {
         let dir = match action {
             0 => Direction::Up,
             1 => Direction::Down,
@@ -101,7 +101,7 @@ impl ThreesEnv {
             let phi_new = get_composite_potential(&self.game.board, &self.config);
             let score_new = self.game.score; // <-- Điểm mới (đã được update trong move_dir)
 
-            let base_reward = (score_new - score_old) as f32;
+            let base_reward = (score_new - score_old) as f64;
             let gamma = self.gamma;
             let raw_shaping = (gamma * phi_new) - phi_old;
 
@@ -121,7 +121,7 @@ impl ThreesEnv {
     }
 
     // Cập nhật hàm Undo để trả về bộ tuple đầy đủ
-    fn undo(&mut self) -> PyResult<(Vec<u32>, f32, bool, Vec<u32>)> {
+    fn undo(&mut self) -> PyResult<(Vec<u32>, f64, bool, Vec<u32>)> {
         if let Some(prev) = self.history.pop() {
             // Lưu trạng thái hiện tại vào tương lai trước khi quay lại
             self.future_history.push(self.game.clone());
@@ -137,7 +137,7 @@ impl ThreesEnv {
         ))
     }
 
-    fn redo(&mut self) -> PyResult<(Vec<u32>, f32, bool, Vec<u32>)> {
+    fn redo(&mut self) -> PyResult<(Vec<u32>, f64, bool, Vec<u32>)> {
         if let Some(next) = self.future_history.pop() {
             self.history.push(self.game.clone());
             self.game = next;
@@ -190,7 +190,7 @@ impl ThreesEnv {
     }
 
     pub fn get_best_action_expectimax(&self, brain: &NTupleNetwork) -> u32 {
-        let mut best_val = -f32::MAX;
+        let mut best_val = -f64::MAX;
         let mut best_action = 0;
 
         for action_idx in 0..4 {
@@ -209,7 +209,7 @@ impl ThreesEnv {
                 for outcome in &outcomes {
                     expected_value += brain.predict_game(outcome);
                 }
-                expected_value /= outcomes.len() as f32;
+                expected_value /= outcomes.len() as f64;
 
                 if expected_value > best_val {
                     best_val = expected_value;
@@ -222,7 +222,7 @@ impl ThreesEnv {
 
     pub fn get_best_action_greedy(&mut self, brain: &NTupleNetwork) -> u32 {
         let mut best_action = 0; // Mặc định
-        let mut best_value = -f32::MAX;
+        let mut best_value = -f64::MAX;
         let valid_actions = self.game.get_valid_moves();
 
         if valid_actions.is_empty() {
@@ -253,7 +253,7 @@ impl ThreesEnv {
         best_action
     }
 
-    pub fn train_step(&mut self, brain: &mut NTupleNetwork, action: u32, alpha: f32) -> (f32, f32) {
+    pub fn train_step(&mut self, brain: &mut NTupleNetwork, action: u32, alpha: f64) -> (f64, f64) {
         // 1. Lấy dữ liệu TRƯỚC khi đi (tại trạng thái S)
         // ---------------------------------------------------
         let s_flat_vec = self.get_board_flat();
@@ -280,7 +280,7 @@ impl ThreesEnv {
         // ---------------------------------------------------
 
         // Base Reward: Điểm thực tế kiếm được
-        let base_reward = (score_new - score_old) as f32;
+        let base_reward = (score_new - score_old) as f64;
 
         // Raw Shaping: Chênh lệch tiềm năng (có nhân Gamma)
         // Gamma phải khớp với gamma của Brain (thường là 0.99)
@@ -310,7 +310,7 @@ impl ThreesEnv {
         let td_error = final_reward + gamma * v_s_next - v_s;
 
         // Chia nhỏ error cho số lượng Tuple để tránh over-correction
-        let num_tuples = brain.tuples.len() as f32;
+        let num_tuples = brain.tuples.len() as f64;
         let split_delta = (td_error * alpha) / num_tuples; // Dùng biến alpha tham số
         brain.update_weights(&s_flat, split_delta);
 
@@ -415,10 +415,10 @@ impl ThreesVecEnv {
 
     /// Parallel Step
     /// Returns: (boards_batch, rewards_batch, dones_batch)
-    fn step(&mut self, actions: Vec<u32>) -> (Vec<Vec<u32>>, Vec<f32>, Vec<bool>) {
+    fn step(&mut self, actions: Vec<u32>) -> (Vec<Vec<u32>>, Vec<f64>, Vec<bool>) {
         // Parallel execution using Rayon
         // map collect is efficient
-        let results: Vec<(Vec<u32>, f32, bool)> = self
+        let results: Vec<(Vec<u32>, f64, bool)> = self
             .envs
             .par_iter_mut()
             .zip(actions.par_iter())
@@ -438,7 +438,7 @@ impl ThreesVecEnv {
                 let game_over = game.check_game_over();
 
                 let reward = if moved {
-                    let delta = new_score as f32 - old_score as f32;
+                    let delta = new_score as f64 - old_score as f64;
                     if delta > 0.0 {
                         (delta + 1.0).log2()
                     } else {

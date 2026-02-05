@@ -1,10 +1,10 @@
 pub struct AdaptiveManager {
-    mean_base: f32,
-    var_base: f32,
-    mean_shaping: f32,
-    var_shaping: f32,
-    decay: f32,        // Thường là 0.99
-    target_ratio: f32, // k = 0.2
+    mean_base: f64,
+    var_base: f64,
+    mean_shaping: f64,
+    var_shaping: f64,
+    decay: f64,        // Thường là 0.99
+    target_ratio: f64, // k = 0.2
 }
 
 impl AdaptiveManager {
@@ -19,7 +19,7 @@ impl AdaptiveManager {
         }
     }
 
-    pub fn update_and_scale(&mut self, base: f32, raw_shaping: f32) -> f32 {
+    pub fn update_and_scale(&mut self, base: f64, raw_shaping: f64) -> f64 {
         // Cập nhật stats cho Base
         let delta_b = base - self.mean_base;
         self.mean_base += (1.0 - self.decay) * delta_b;

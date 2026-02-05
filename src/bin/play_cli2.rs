@@ -11,8 +11,8 @@ use threes_rs::{
 };
 
 // Hằng số Tỷ lệ vàng
-const GOLDEN_RATIO: f32 = 1.61803398875;
-const BUFF_MULTIPLIER: f32 = GOLDEN_RATIO;
+const GOLDEN_RATIO: f64 = 1.61803398875;
+const BUFF_MULTIPLIER: f64 = GOLDEN_RATIO;
 
 // Struct wrapper pointer (giữ nguyên)
 struct SharedBrain {
@@ -165,7 +165,7 @@ fn main() {
         let ep_per_thread = chunk_episodes as u32 / num_threads;
 
         // Sử dụng map của rayon để thu về vector điểm số từ các luồng
-        let results: Vec<Vec<f32>> = (0..num_threads)
+        let results: Vec<Vec<f64>> = (0..num_threads)
             .into_par_iter()
             .map(|t_id| {
                 let mut local_env = ThreesEnv::new(gamma);
@@ -187,7 +187,7 @@ fn main() {
             .collect();
 
         // Gộp tất cả điểm số lại thành 1 list lớn
-        let mut all_scores: Vec<f32> = results.into_iter().flatten().collect();
+        let mut all_scores: Vec<f64> = results.into_iter().flatten().collect();
 
         // ------------------------------------------------------
         // 3. TÍNH TOÁN METRIC (TOP 1% AVG)
@@ -195,12 +195,12 @@ fn main() {
         // Sắp xếp giảm dần để lấy điểm cao nhất
         all_scores.sort_by(|a, b| b.partial_cmp(a).unwrap());
 
-        let top_1_percent_count = (all_scores.len() as f32 * 0.01).ceil() as usize;
+        let top_1_percent_count = (all_scores.len() as f64 * 0.01).ceil() as usize;
         let top_1_percent_count = top_1_percent_count.max(1); // Ít nhất 1
         let top_scores = &all_scores[0..top_1_percent_count];
 
-        let sum_top: f32 = top_scores.iter().sum();
-        let current_top1_avg = sum_top / top_1_percent_count as f32;
+        let sum_top: f64 = top_scores.iter().sum();
+        let current_top1_avg = sum_top / top_1_percent_count as f64;
 
         let duration = start_time.elapsed();
         println!("\n📊 Stats Loop:");
@@ -251,7 +251,7 @@ fn main() {
             // Như vậy mọi thay đổi (Buff + Weights học trong lúc buff) đều bị vứt bỏ.
         }
 
-        println!("⏱️ Time: {:.1}s | Total Ep: {}\n-----------------------------------------------------------", duration.as_secs_f32(), current_global_episode);
+        println!("⏱️ Time: {:.1}s | Total Ep: {}\n-----------------------------------------------------------", duration.as_secs_f64(), current_global_episode);
     }
 }
 
@@ -269,7 +269,7 @@ fn start_config_watcher(shared_hot_config: Arc<RwLock<HotLoadConfig>>) {
     });
 }
 
-// Sửa hàm run_training_parallel để trả về Vec<f32>
+// Sửa hàm run_training_parallel để trả về Vec<f64>
 fn run_training_parallel(
     env: &mut ThreesEnv,
     shared_brain: Arc<SharedBrain>,
@@ -281,7 +281,7 @@ fn run_training_parallel(
     thread_id: u32,
     num_threads: u32,
     policy: TrainingPolicy,
-) -> Vec<f32> {
+) -> Vec<f64> {
     // <--- Thay đổi kiểu trả về
     let mut rng = rand::rng();
     let mut running_error = 0.0;
@@ -313,7 +313,7 @@ fn run_training_parallel(
 
     for local_ep in 0..episodes_to_run {
         let current_global_ep = (local_ep * num_threads + thread_id) + start_offset;
-        let progress = current_global_ep as f32 / total_target_episodes as f32;
+        let progress = current_global_ep as f64 / total_target_episodes as f64;
 
         // HOT RELOAD
         let current_hot = *hot_config.read().unwrap();
@@ -362,7 +362,7 @@ fn run_training_parallel(
             running_error = running_error * 0.999 + error * 0.001;
         }
 
-        let final_score = env.game.score as f32;
+        let final_score = env.game.score as f64;
         running_score = running_score * 0.99 + final_score * 0.01;
 
         // Push điểm vào list

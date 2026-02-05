@@ -2,20 +2,20 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-const GOLDEN_RATIO: f32 = 1.61803398875;
+const GOLDEN_RATIO: f64 = 1.61803398875;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct TrainingConfig {
     #[serde(default)]
-    pub w_empty: f32,
+    pub w_empty: f64,
     #[serde(default)]
-    pub w_snake: f32,
+    pub w_snake: f64,
 
     // Thêm 2 em mới
     #[serde(default)]
-    pub w_merge: f32, // Khởi tạo tầm 10.0
+    pub w_merge: f64, // Khởi tạo tầm 10.0
     #[serde(default)]
-    pub w_disorder: f32, // Khởi tạo tầm 5.0
+    pub w_disorder: f64, // Khởi tạo tầm 5.0
 }
 
 impl Default for TrainingConfig {
@@ -30,7 +30,7 @@ impl Default for TrainingConfig {
 }
 
 pub struct PBTManager {
-    population: HashMap<u32, (f32, TrainingConfig)>,
+    population: HashMap<u32, (f64, TrainingConfig)>,
 }
 
 impl PBTManager {
@@ -43,9 +43,9 @@ impl PBTManager {
     pub fn report_and_evolve(
         &mut self,
         thread_id: u32,
-        current_score: f32,
+        current_score: f64,
         current_config: TrainingConfig,
-        buff_multiplier: f32,
+        buff_multiplier: f64,
     ) -> (bool, TrainingConfig) {
         // 1. Cập nhật kết quả
         self.population
@@ -78,21 +78,25 @@ impl PBTManager {
             // 1. Đột biến Empty
             if rng.random_bool(0.5) {
                 new_config.w_empty *= buff_multiplier;
+                new_config.w_empty = new_config.w_empty.clamp(0.1, f64::MAX);
             }
 
             // 2. Đột biến Snake
             if rng.random_bool(0.5) {
                 new_config.w_snake *= buff_multiplier;
+                new_config.w_snake = new_config.w_snake.clamp(0.1, f64::MAX);
             }
 
             // 3. Đột biến Merge (MỚI)
             if rng.random_bool(0.5) {
                 new_config.w_merge *= buff_multiplier;
+                new_config.w_merge = new_config.w_merge.clamp(0.1, f64::MAX);
             }
 
             // 4. Đột biến Disorder (MỚI)
             if rng.random_bool(0.5) {
                 new_config.w_disorder *= buff_multiplier;
+                new_config.w_disorder = new_config.w_disorder.clamp(0.1, f64::MAX);
             }
 
             println!(
@@ -108,7 +112,7 @@ impl PBTManager {
     }
 
     // Thêm vào impl PBTManager
-    pub fn get_best_config_entry(&self) -> Option<(f32, TrainingConfig)> {
+    pub fn get_best_config_entry(&self) -> Option<(f64, TrainingConfig)> {
         if self.population.is_empty() { return None; }
         
         let mut sorted_pop: Vec<_> = self.population.values().collect();

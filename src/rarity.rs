@@ -23,13 +23,13 @@ impl RarityEngine {
     }
 
     // Hàm tính Reward bác đã có
-    pub fn calculate_merge_reward(&self, rank: u8, local_board: &[u8; 16]) -> f32 {
-        let local_count = local_board.iter().filter(|&&r| r == rank).count() as f32;
+    pub fn calculate_merge_reward(&self, rank: u8, local_board: &[u8; 16]) -> f64 {
+        let local_count = local_board.iter().filter(|&&r| r == rank).count() as f64;
 
         // Công thức: Nghịch đảo xác suất (càng ít gặp càng to)
         // total_seen / counts[rank] chính là 1/P(rank)
         let global_factor =
-            (self.total_seen as f32 + 1.0) / (self.global_counts[rank as usize] as f32 + 1.0);
+            (self.total_seen as f64 + 1.0) / (self.global_counts[rank as usize] as f64 + 1.0);
         let local_factor = 16.0 / (local_count + 1.0);
 
         // Dynamic Part: Giá trị dựa trên độ hiếm (Trung bình Rank 1 ~ 3.3)

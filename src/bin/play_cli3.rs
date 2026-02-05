@@ -11,7 +11,7 @@ use threes_rs::{
 };
 
 // Hằng số Tỷ lệ vàng
-const GOLDEN_RATIO: f32 = 1.61803398875;
+const GOLDEN_RATIO: f64 = 1.61803398875;
 
 // Struct wrapper pointer (giữ nguyên)
 struct SharedBrain {
@@ -32,8 +32,8 @@ fn main() {
     let gamma = 0.995;
     let args: Vec<String> = env::args().collect();
 
-    // Episode bắt đầu
-    let mut current_global_episode = if args.len() > 1 {
+    // Episode override (nếu muốn force từ dòng lệnh, không thì lấy từ file)
+    let override_episode = if args.len() > 1 {
         args[1].parse::<usize>().unwrap_or(0) as u32
     } else {
         0 as u32
@@ -70,8 +70,8 @@ fn main() {
     println!("Multiplier: {}", multiplier);
 
     // --- SETUP BRAIN ---
-    let mut brain = if current_global_episode > 0 {
-        let filename = format!("brain_ep_{}.msgpack", current_global_episode);
+    let mut brain = if override_episode > 0 {
+        let filename = format!("brain_ep_{}.msgpack", override_episode);
         println!("📂 Loading brain: {}", filename);
         let b = NTupleNetwork::load_from_msgpack(&filename).expect("Không tìm thấy file!");
         println!(
@@ -81,8 +81,14 @@ fn main() {
         b
     } else {
         println!("✨ Tạo não mới tinh...");
-        NTupleNetwork::new(0.1, 0.995)
+        NTupleNetwork::new(0.1, gamma)
     };
+
+    if override_episode > 0 && brain.total_episodes == 0 {
+        brain.total_episodes = override_episode;
+    }
+
+    let mut current_global_episode = brain.total_episodes;
 
     // Safety checks
     if brain.w_empty == 0.0 {
@@ -92,10 +98,10 @@ fn main() {
         brain.w_snake = 50.0;
     }
     if brain.w_merge == 0.0 {
-        brain.w_merge = 15.0;
+        brain.w_merge = 50.0;
     }
     if brain.w_disorder == 0.0 {
-        brain.w_disorder = 5.0;
+        brain.w_disorder = 50.0;
     }
 
     // Pointer setup
@@ -125,14 +131,20 @@ fn main() {
     loop {
         let start_time = std::time::Instant::now();
 
-        // Bước 0: Reset não về trạng thái tốt nhất đã biết trước khi thử Buff mới
-        // Điều này đảm bảo ta không cộng dồn các Buff thất bại
+        // Bước 0: LUÔN RESET VỀ TRẠNG THÁI ỔN ĐỊNH NHẤT
+        // Nếu vòng trước fail, brain sẽ quay về như chưa từng train vòng đó.
+        // Nếu vòng trước win, best_stable_brain đã được update ở cuối vòng lặp.
         brain = best_stable_brain.clone();
 
-        // Cập nhật lại pointer (Vì brain move/clone có thể đổi địa chỉ vùng nhớ heap,
-        // nhưng biến stack `brain` vẫn ở đó, logic pointer cũ của bạn trỏ vào stack var nên ok.
-        // Tuy nhiên để an toàn tuyệt đối khi dùng unsafe pointer với clone, ta update lại pointer nếu cần.
-        // Ở đây mình gán nội dung vào biến brain cũ nên pointer shared_brain vẫn valid.
+        // Cập nhật lại pointer trỏ vào brain mới reset
+        // (Lưu ý: SharedBrain dùng pointer raw, nên ta gán đè dữ liệu vào vùng nhớ cũ
+        // hoặc tạo Arc mới. Ở đây vì cấu trúc main, ta cần đảm bảo pointer trỏ đúng)
+        // Cách an toàn nhất trong loop này là tạo SharedBrain mới cho mỗi vòng lặp
+        // vì biến `brain` bị move/clone lại.
+        let brain_ptr = SharedBrain {
+            network: &mut brain as *mut NTupleNetwork,
+        };
+        let shared_brain_loop = Arc::new(brain_ptr);
 
         // ------------------------------------------------------
         // 1. LOGIC BUFF (Random 1 chỉ số)
@@ -175,8 +187,10 @@ fn main() {
         // ------------------------------------------------------
         let ep_per_thread = chunk_episodes as u32 / num_threads;
 
+        let current_ep_for_decay = brain.total_episodes;
+
         // Sử dụng map của rayon để thu về vector điểm số từ các luồng
-        let results: Vec<Vec<f32>> = (0..num_threads)
+        let results: Vec<Vec<f64>> = (0..num_threads)
             .into_par_iter()
             .map(|t_id| {
                 let mut local_env = ThreesEnv::new(gamma);
@@ -189,7 +203,7 @@ fn main() {
                     hot_config.clone(),
                     ep_per_thread,
                     total_target_episodes,
-                    current_global_episode,
+                    current_ep_for_decay,
                     t_id,
                     num_threads,
                     training_policy,
@@ -199,7 +213,7 @@ fn main() {
             .collect();
 
         // Gộp tất cả điểm số lại thành 1 list lớn
-        let mut all_scores: Vec<f32> = results.into_iter().flatten().collect();
+        let mut all_scores: Vec<f64> = results.into_iter().flatten().collect();
 
         // ------------------------------------------------------
         // 3. TÍNH TOÁN METRIC (TOP 1% AVG)
@@ -207,32 +221,43 @@ fn main() {
         // Sắp xếp giảm dần để lấy điểm cao nhất
         all_scores.sort_by(|a, b| b.partial_cmp(a).unwrap());
 
-        let top_1_percent_count = (all_scores.len() as f32 * 0.01).ceil() as usize;
+        let top_1_percent_count = (all_scores.len() as f64 * 0.01).ceil() as usize;
         let top_1_percent_count = top_1_percent_count.max(1); // Ít nhất 1
         let top_scores = &all_scores[0..top_1_percent_count];
 
-        let sum_top: f32 = top_scores.iter().sum();
-        let current_top1_avg = sum_top / top_1_percent_count as f32;
+        let sum_top: f64 = top_scores.iter().sum();
+        let current_top1_avg = sum_top / top_1_percent_count as f64;
 
         let duration = start_time.elapsed();
         println!("\n📊 Stats Loop:");
         println!("   - Max Score: {:.0}", all_scores[0]);
         println!("   - Top 1% Avg (Current): {:.2}", current_top1_avg);
-        println!("   - Top 1% Avg (Record):  {:.2}", best_top1_percent_avg);
+        println!(
+            "   - Top 1% Avg (Record):  {:.2}",
+            best_stable_brain.best_top1_avg
+        );
 
         // ------------------------------------------------------
         // 4. QUYẾT ĐỊNH: GIỮ HAY RESET?
         // ------------------------------------------------------
         current_global_episode += chunk_episodes;
 
-        if current_top1_avg > best_top1_percent_avg {
+        // 🔄 SỬA ĐIỀU KIỆN: So sánh với best_stable_brain
+        if current_top1_avg > best_stable_brain.best_top1_avg {
             // >>> WIN CASE <<<
             println!("✅ NEW RECORD! Config này ngon. Giữ lại network & config.");
 
-            // Cập nhật kỷ lục mới
-            best_top1_percent_avg = current_top1_avg;
+            // 1. Cập nhật Stats vào Brain
+            brain.total_episodes += chunk_episodes;
+            brain.best_top1_avg = current_top1_avg;
 
-            // Cập nhật PBT Best config vào brain (để lưu file cho chuẩn)
+            // 2. Cập nhật biến cục bộ
+            current_global_episode = brain.total_episodes;
+
+            // ❌ XÓA DÒNG NÀY (Không cần biến cục bộ nữa):
+            // best_top1_percent_avg = current_top1_avg;
+
+            // 3. Cập nhật PBT Config tốt nhất vào Brain (Giữ nguyên)
             {
                 let pbt = pbt_manager.lock().unwrap();
                 if let Some(best_thread) = pbt.get_best_config_entry() {
@@ -244,10 +269,12 @@ fn main() {
                 }
             }
 
-            // Lưu trạng thái "Ổn định" mới là brain hiện tại (bao gồm cả weights đã học + config đã buff)
+            // 4. LƯU "CHECKPOINT CỨNG" MỚI (Giữ nguyên)
+            // Lệnh này sẽ tự động lưu `brain.best_top1_avg` mới vào `best_stable_brain`
+            // để vòng lặp sau dùng làm mốc so sánh.
             best_stable_brain = brain.clone();
 
-            // Lưu file
+            // 5. Lưu File (Giữ nguyên)
             let filename = format!("brain_ep_{}.msgpack", current_global_episode);
             if let Err(e) = brain.export_to_msgpack(&filename) {
                 eprintln!("❌ Lỗi lưu file: {}", e);
@@ -256,14 +283,19 @@ fn main() {
             }
         } else {
             // >>> LOSE CASE <<<
-            println!("❌ FAILED. Config này yếu hơn/bằng cũ. REVERT lại từ đầu.");
+            println!("❌ FAILED. Hủy bỏ Iteration này.");
 
-            // Không lưu file brain hiện tại.
-            // Loop tiếp theo sẽ tự động: brain = best_stable_brain.clone();
-            // Như vậy mọi thay đổi (Buff + Weights học trong lúc buff) đều bị vứt bỏ.
+            // 🔄 SỬA DÒNG NÀY: Lấy từ best_stable_brain
+            println!(
+                "🔄 Reverting về trạng thái cũ (Ep: {}, Best: {:.2})",
+                best_stable_brain.total_episodes, best_stable_brain.best_top1_avg
+            );
+
+            // Revert biến đếm hiển thị bên ngoài cho đúng thực tế
+            current_global_episode = best_stable_brain.total_episodes;
         }
 
-        println!("⏱️ Time: {:.1}s | Total Ep: {}\n-----------------------------------------------------------", duration.as_secs_f32(), current_global_episode);
+        println!("⏱️ Time: {:.1}s | Total Ep: {}\n-----------------------------------------------------------", duration.as_secs_f64(), current_global_episode);
     }
 }
 
@@ -281,7 +313,7 @@ fn start_config_watcher(shared_hot_config: Arc<RwLock<HotLoadConfig>>) {
     });
 }
 
-// Sửa hàm run_training_parallel để trả về Vec<f32>
+// Sửa hàm run_training_parallel để trả về Vec<f64>
 fn run_training_parallel(
     env: &mut ThreesEnv,
     shared_brain: Arc<SharedBrain>,
@@ -293,8 +325,8 @@ fn run_training_parallel(
     thread_id: u32,
     num_threads: u32,
     policy: TrainingPolicy,
-    buff_multiplier: f32,
-) -> Vec<f32> {
+    buff_multiplier: f64,
+) -> Vec<f64> {
     // <--- Thay đổi kiểu trả về
     let mut rng = rand::rng();
     let mut running_error = 0.0;
@@ -326,7 +358,7 @@ fn run_training_parallel(
 
     for local_ep in 0..episodes_to_run {
         let current_global_ep = (local_ep * num_threads + thread_id) + start_offset;
-        let progress = current_global_ep as f32 / total_target_episodes as f32;
+        let progress = current_global_ep as f64 / total_target_episodes as f64;
 
         // HOT RELOAD
         let current_hot = *hot_config.read().unwrap();
@@ -375,7 +407,7 @@ fn run_training_parallel(
             running_error = running_error * 0.999 + error * 0.001;
         }
 
-        let final_score = env.game.score as f32;
+        let final_score = env.game.score as f64;
         running_score = running_score * 0.99 + final_score * 0.01;
 
         // Push điểm vào list

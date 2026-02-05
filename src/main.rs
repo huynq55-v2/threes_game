@@ -224,7 +224,7 @@ fn run_training_parallel(
     // --- VÒNG LẶP CHÍNH ---
     for local_ep in 0..episodes_to_run {
         let current_global_ep = (local_ep * num_threads + thread_id) + start_offset;
-        let progress = current_global_ep as f32 / total_target_episodes as f32;
+        let progress = current_global_ep as f64 / total_target_episodes as f64;
 
         // 3. XỬ LÝ HOT CONFIG & MERGE
         let current_hot = *hot_config.read().unwrap();
@@ -275,7 +275,7 @@ fn run_training_parallel(
             let (error, _) = env.train_step(brain, action, current_alpha);
             running_error = running_error * 0.9999 + error * 0.0001;
         }
-        running_score = running_score * 0.99 + env.game.score as f32 * 0.01;
+        running_score = running_score * 0.99 + env.game.score as f64 * 0.01;
 
         // 6. PBT EVOLVE
         if local_ep > 0 && local_ep % 1000 == 0 {

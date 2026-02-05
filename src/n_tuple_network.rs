@@ -9,31 +9,37 @@ use rmp_serde::{Deserializer, Serializer};
 
 use crate::game::Game;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TupleConfig {
     pub indices: Vec<usize>, // Các ô trên bàn cờ (ví dụ: [0,1,2,3,7])
     pub weight_index: usize, // Trỏ đến bảng weights số mấy (ví dụ: bảng số 0)
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct NTupleNetwork {
-    pub tuples: Vec<TupleConfig>, // Danh sách 96 con rắn
-    pub weights: Vec<Vec<f32>>,   // Chỉ có 12 bảng dữ liệu thôi
-    pub alpha: f32,
-    pub gamma: f32,
+    pub tuples: Vec<TupleConfig>,
+    pub weights: Vec<Vec<f64>>,
+    pub alpha: f64,
+    pub gamma: f64,
 
     #[serde(default)]
-    pub w_empty: f32,
+    pub w_empty: f64,
     #[serde(default)]
-    pub w_snake: f32,
+    pub w_snake: f64,
     #[serde(default)]
-    pub w_disorder: f32,
+    pub w_disorder: f64,
     #[serde(default)]
-    pub w_merge: f32,
+    pub w_merge: f64,
+
+    // --- THÊM 2 TRƯỜNG NÀY ---
+    #[serde(default)]
+    pub total_episodes: u32, // Lưu tổng số ván đã train (để tính alpha/epsilon)
+    #[serde(default)]
+    pub best_top1_avg: f64, // Lưu kỷ lục điểm số
 }
 
 impl NTupleNetwork {
-    pub fn new(alpha: f32, gamma: f32) -> Self {
+    pub fn new(alpha: f64, gamma: f64) -> Self {
         let mut network = NTupleNetwork {
             tuples: Vec::new(),
             weights: Vec::new(),
@@ -43,6 +49,10 @@ impl NTupleNetwork {
             w_snake: 0.0,
             w_disorder: 0.0,
             w_merge: 0.0,
+
+            // Khởi tạo mặc định
+            total_episodes: 0,
+            best_top1_avg: 0.0,
         };
 
         network.add_shared_snake();
@@ -157,11 +167,11 @@ impl NTupleNetwork {
         if value == 2 {
             return 2;
         }
-        let code = ((value as f32 / 3.0).log2() as usize) + 3;
+        let code = ((value as f64 / 3.0).log2() as usize) + 3;
         code.min(14)
     }
 
-    pub fn predict(&self, board: &[u32; 16]) -> f32 {
+    pub fn predict(&self, board: &[u32; 16]) -> f64 {
         let mut sum = 0.0;
 
         // Tính sẵn code cho cả bàn cờ để nhanh
@@ -184,7 +194,7 @@ impl NTupleNetwork {
         sum
     }
 
-    pub fn predict_game(&self, game: &Game) -> f32 {
+    pub fn predict_game(&self, game: &Game) -> f64 {
         let mut board_flat = [0u32; 16];
         for r in 0..4 {
             for c in 0..4 {
@@ -194,7 +204,7 @@ impl NTupleNetwork {
         self.predict(&board_flat)
     }
 
-    pub fn update_weights(&mut self, board: &[u32; 16], delta: f32) {
+    pub fn update_weights(&mut self, board: &[u32; 16], delta: f64) {
         // Delta đã được chia nhỏ từ bên ngoài
 
         let mut encoded_board = [0usize; 16];

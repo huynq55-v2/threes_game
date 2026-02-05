@@ -129,7 +129,7 @@ impl Game {
     }
 
     // Hàm phụ trợ (như cũ)
-    fn calculate_diff(a: u32, b: u32) -> f32 {
+    fn calculate_diff(a: u32, b: u32) -> f64 {
         if (a == 1 && b == 2) || (a == 2 && b == 1) { return 0.0; } // Cặp đôi hoàn hảo
         if (a == 1 && b == 1) || (a == 2 && b == 2) { return 1.0; } // Kẹt xe
         
@@ -144,7 +144,7 @@ impl Game {
 
         // Dùng logarit của chênh lệch để phạt nặng sự chênh lệch lớn
         // Ví dụ: Rank 8 đứng cạnh Rank 1 -> Diff = 7 -> Phạt 7
-        (ra as f32 - rb as f32).abs()
+        (ra as f64 - rb as f64).abs()
     }
 
     pub fn get_highest_rank(&self) -> u8 {
@@ -895,7 +895,7 @@ mod tests {
         
         // Lưu trữ Dynamic Reward của từng Rank để tính thống kê
         // Key: Rank -> Value: List các giá trị dynamic nhận được
-        let mut rank_stats: HashMap<u8, Vec<f32>> = HashMap::new();
+        let mut rank_stats: HashMap<u8, Vec<f64>> = HashMap::new();
 
         let total_games = 50000;
         let mut total_merges = 0;
@@ -929,11 +929,11 @@ mod tests {
                         for rank in merged_ranks {
                             // --- CÔNG THỨC DYNAMIC (TÁI HIỆN) ---
                             // Copy logic từ RarityEngine nhưng BỎ số 1.0 ở cuối
-                            let local_count = local_board_ranks.iter().filter(|&&r| r == rank).count() as f32;
+                            let local_count = local_board_ranks.iter().filter(|&&r| r == rank).count() as f64;
                             
                             // Lưu ý: total_seen và global_counts lấy từ game.rarity (đã được update bên trong move_dir)
-                            let global_factor = (game.rarity.total_seen as f32 + 1.0) 
-                                              / (game.rarity.global_counts[rank as usize] as f32 + 1.0);
+                            let global_factor = (game.rarity.total_seen as f64 + 1.0) 
+                                              / (game.rarity.global_counts[rank as usize] as f64 + 1.0);
                             
                             let local_factor = 16.0 / (local_count + 1.0);
                             
@@ -975,8 +975,8 @@ mod tests {
             let median = vals[mid];
             
             // Tính Mean
-            let sum: f32 = vals.iter().sum();
-            let mean = sum / vals.len() as f32;
+            let sum: f64 = vals.iter().sum();
+            let mean = sum / vals.len() as f64;
             
             let max_val = vals.last().unwrap();
             

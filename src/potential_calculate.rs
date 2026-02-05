@@ -1,6 +1,6 @@
 use crate::{pbt::TrainingConfig, tile::Tile};
 
-fn calculate_empty(board: &[[Tile; 4]; 4]) -> f32 {
+fn calculate_empty(board: &[[Tile; 4]; 4]) -> f64 {
     let mut count = 0;
     for r in 0..4 {
         for c in 0..4 {
@@ -9,10 +9,10 @@ fn calculate_empty(board: &[[Tile; 4]; 4]) -> f32 {
             }
         }
     }
-    count as f32
+    count as f64
 }
 
-pub fn calculate_snake(board: &[[Tile; 4]; 4]) -> f32 {
+pub fn calculate_snake(board: &[[Tile; 4]; 4]) -> f64 {
     // Ma trận Snake chuẩn (Góc trên trái)
     // Các số này là lũy thừa để tạo độ dốc cực lớn:
     // M[0][0] là to nhất, sau đó đi dích dắc giảm dần
@@ -27,7 +27,7 @@ pub fn calculate_snake(board: &[[Tile; 4]; 4]) -> f32 {
 
     // Trọng số càng to càng quan trọng (ở đây dùng đơn vị tuyến tính cho nhẹ,
     // nhưng khi nhân với Rank của Tile nó sẽ tạo ra hiệu ứng lũy thừa)
-    const SNAKE_WEIGHTS: [f32; 16] = [
+    const SNAKE_WEIGHTS: [f64; 16] = [
         1073741824.0,
         268435456.0,
         67108864.0,
@@ -110,7 +110,7 @@ pub fn calculate_snake(board: &[[Tile; 4]; 4]) -> f32 {
     max_score
 }
 
-pub fn calculate_merge_potential(board: &[[Tile; 4]; 4]) -> f32 {
+pub fn calculate_merge_potential(board: &[[Tile; 4]; 4]) -> f64 {
     let mut merges = 0.0;
     for r in 0..4 {
         for c in 0..4 {
@@ -138,7 +138,7 @@ pub fn calculate_merge_potential(board: &[[Tile; 4]; 4]) -> f32 {
     merges // Càng nhiều càng tốt
 }
 
-pub fn calculate_disorder(board: &[[Tile; 4]; 4]) -> f32 {
+pub fn calculate_disorder(board: &[[Tile; 4]; 4]) -> f64 {
     let mut penalty = 0.0;
     for r in 0..4 {
         for c in 0..4 {
@@ -149,7 +149,7 @@ pub fn calculate_disorder(board: &[[Tile; 4]; 4]) -> f32 {
             let rank_curr = get_rank(val);
 
             // Check neighbor (Right & Down)
-            let check = |n_val: u32| -> f32 {
+            let check = |n_val: u32| -> f64 {
                 if n_val == 0 {
                     return 0.0;
                 }
@@ -177,7 +177,7 @@ pub fn calculate_disorder(board: &[[Tile; 4]; 4]) -> f32 {
     penalty // Càng thấp càng tốt (nên w_disorder sẽ là số âm hoặc trừ đi)
 }
 
-pub fn get_composite_potential(board: &[[Tile; 4]; 4], cfg: &TrainingConfig) -> f32 {
+pub fn get_composite_potential(board: &[[Tile; 4]; 4], cfg: &TrainingConfig) -> f64 {
     let phi_empty = calculate_empty(board);
     let phi_snake = calculate_snake(board) / 1073741824.0; // Normalized Snake
 
@@ -197,11 +197,11 @@ pub fn get_composite_potential(board: &[[Tile; 4]; 4], cfg: &TrainingConfig) -> 
 }
 
 // Helper để lấy Rank (đã có ở bài trước)
-fn get_rank(val: u32) -> f32 {
+fn get_rank(val: u32) -> f64 {
     if val <= 2 {
         0.0
     } else {
-        (val as f32 / 3.0).log2() + 1.0
+        (val as f64 / 3.0).log2() + 1.0
     }
 }
 
