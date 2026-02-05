@@ -118,17 +118,31 @@ fn main() {
     // Đây là bản chuẩn. Mọi vòng lặp đều clone từ đây ra.
     let mut best_stable_brain = brain.clone();
 
-    println!("🚀 Bắt đầu Training với Logic: Top 1% Average & Strict Auto-Revert...");
+    // Kỷ lục được tính dựa trên điểm EVAL (evaluation training), không phải điểm train noisy
+    let mut best_eval_avg = best_stable_brain.best_overall_avg;
+
     println!(
-        "📊 Current Record: Top1% Avg = {:.2} (tại Ep {})",
-        best_stable_brain.best_top1_avg, best_stable_brain.total_episodes
+        "🚀 Start Training. Baseline Eval Record: {:.2}",
+        best_eval_avg
+    );
+    println!(
+        "📊 Current Checkpoint: Ep {} | Config: E={:.1} S={:.1} M={:.1} D={:.1}",
+        best_stable_brain.total_episodes,
+        best_stable_brain.w_empty,
+        best_stable_brain.w_snake,
+        best_stable_brain.w_merge,
+        best_stable_brain.w_disorder
     );
 
-    loop {
-        let start_time = std::time::Instant::now();
+    // Số lượng game evaluation. 50k để đánh giá kỹ.
+    let eval_games = 50_000u32;
 
-        // Bước 0: LUÔN RESET VỀ TRẠNG THÁI ỔN ĐỊNH NHẤT
-        // Brain nháp (mutable) được tạo ra từ bản chuẩn.
+    loop {
+        let loop_start = std::time::Instant::now();
+
+        // ============================================================
+        // BƯỚC 0: RESET VỀ BẢN CHUẨN ĐỂ TRAIN
+        // ============================================================
         brain = best_stable_brain.clone();
 
         // Tạo pointer MỚI cho vòng lặp này (Quan trọng!)
@@ -187,14 +201,13 @@ fn main() {
 
         println!("-> Buff Multiplier: {:.2}", buff_multiplier);
 
-        // ------------------------------------------------------
-        // 2. CHẠY SONG SONG
-        // ------------------------------------------------------
-        let ep_per_thread = chunk_episodes as u32 / num_threads;
+        // ============================================================
+        // BƯỚC 1: TRAINING PHASE (100k games - "Học bẩn")
+        // ============================================================
+        println!("🏋️ Training Phase ({} games)...", chunk_episodes);
 
-        // Lấy mốc thời gian hiện tại để tính Alpha/Epsilon
+        let ep_per_thread = chunk_episodes as u32 / num_threads;
         let current_base_ep = best_stable_brain.total_episodes;
-        // Mục tiêu của vòng này là chạy thêm chunk_episodes
         let target_ep = current_base_ep + chunk_episodes;
 
         let results: Vec<Vec<f64>> = (0..num_threads)
@@ -209,7 +222,7 @@ fn main() {
                     hot_config.clone(),
                     ep_per_thread,
                     total_target_episodes,
-                    current_base_ep, // Start offset
+                    current_base_ep,
                     t_id,
                     num_threads,
                     training_policy,
@@ -218,101 +231,107 @@ fn main() {
             })
             .collect();
 
-        let mut all_scores: Vec<f64> = results.into_iter().flatten().collect();
+        let all_scores: Vec<f64> = results.into_iter().flatten().collect();
+        let train_avg = all_scores.iter().sum::<f64>() / all_scores.len() as f64;
+        println!("   -> Training Avg (Noisy): {:.2}", train_avg);
 
-        // ------------------------------------------------------
-        // 3. TÍNH TOÁN METRIC (3 TIÊU CHÍ)
-        // ------------------------------------------------------
-        all_scores.sort_by(|a, b| b.partial_cmp(a).unwrap());
-        let total_count = all_scores.len();
+        // ============================================================
+        // BƯỚC 2: SELECT CONFIG PHASE
+        // ============================================================
+        let best_pbt_config = {
+            let pbt = pbt_manager.lock().unwrap();
+            pbt.get_best_config_entry()
+                .map(|x| x.1)
+                .unwrap_or(TrainingConfig {
+                    w_empty: brain.w_empty,
+                    w_snake: brain.w_snake,
+                    w_merge: brain.w_merge,
+                    w_disorder: brain.w_disorder,
+                })
+        };
 
-        // A. Top 1%
-        let top_1_count = (total_count as f64 * 0.01).ceil() as usize;
-        let top_1_count = top_1_count.max(1);
-        let top_1_avg: f64 = all_scores[0..top_1_count].iter().sum::<f64>() / top_1_count as f64;
-
-        // B. Average
-        let overall_avg: f64 = all_scores.iter().sum::<f64>() / total_count as f64;
-
-        // C. Bottom 10%
-        let bot_10_count = (total_count as f64 * 0.1).ceil() as usize;
-        let bot_10_count = bot_10_count.max(1);
-        let bot_10_avg: f64 =
-            all_scores[total_count - bot_10_count..].iter().sum::<f64>() / bot_10_count as f64;
-
-        let duration = start_time.elapsed();
-        println!("\n📊 Stats Loop (Target Ep {}):", target_ep);
+        // ============================================================
+        // BƯỚC 3: EVALUATION TRAINING (50k games)
+        // Lấy MODEL ỔN ĐỊNH + CONFIG MỚI, TRAIN THẬT để đánh giá
+        // ============================================================
         println!(
-            "   - Top 1% Avg:   {:.2} (Rec: {:.2})",
-            top_1_avg, best_stable_brain.best_top1_avg
+            "� Evaluation Training ({} games) with Best Config...",
+            eval_games
         );
         println!(
-            "   - Overall Avg:  {:.2} (Rec: {:.2})",
-            overall_avg, best_stable_brain.best_overall_avg
+            "   Cfg: Empty={:.1} Snake={:.1} Merge={:.1} Disorder={:.1}",
+            best_pbt_config.w_empty,
+            best_pbt_config.w_snake,
+            best_pbt_config.w_merge,
+            best_pbt_config.w_disorder
         );
+
+        // Clone model ổn định để train evaluation
+        let mut eval_brain = best_stable_brain.clone();
+        
+        // Gán config mới vào eval_brain
+        eval_brain.w_empty = best_pbt_config.w_empty;
+        eval_brain.w_snake = best_pbt_config.w_snake;
+        eval_brain.w_merge = best_pbt_config.w_merge;
+        eval_brain.w_disorder = best_pbt_config.w_disorder;
+
+        // Train thật 50k games với config mới
+        let (eval_avg, eval_max, trained_eval_brain) = run_evaluation_training(
+            eval_brain,
+            best_pbt_config,
+            eval_games,
+            num_threads,
+            gamma,
+            total_target_episodes,
+            best_stable_brain.total_episodes,
+            training_policy,
+        );
+
+        let duration = loop_start.elapsed();
         println!(
-            "   - Bot 10% Avg:  {:.2} (Rec: {:.2})",
-            bot_10_avg, best_stable_brain.best_bot10_avg
+            "   -> 📊 Eval Result: Avg = {:.2} (Max: {:.0}) | Record: {:.2}",
+            eval_avg, eval_max, best_eval_avg
         );
 
-        // ------------------------------------------------------
-        // 4. QUYẾT ĐỊNH
-        // ------------------------------------------------------
+        // ============================================================
+        // BƯỚC 4: SO SÁNH & SAVE
+        // Chỉ save nếu điểm Eval cao hơn kỷ lục cũ
+        // ============================================================
+        if eval_avg > best_eval_avg {
+            println!(
+                "✅ NEW RECORD! ({:.2} > {:.2})",
+                eval_avg, best_eval_avg
+            );
 
-        // Điều kiện: Tốt hơn ở CẢ 3 chỉ số
-        // Mẹo: Dùng >= cho 2 chỉ số phụ để dễ thở hơn chút, > cho chỉ số chính
-        let is_better = top_1_avg > best_stable_brain.best_top1_avg
-            && overall_avg >= best_stable_brain.best_overall_avg
-            && bot_10_avg >= best_stable_brain.best_bot10_avg;
+            // Cập nhật kỷ lục
+            best_eval_avg = eval_avg;
 
-        if is_better {
-            println!("✅ NEW RECORD! Thỏa mãn 3 tiêu chí.");
+            // Cập nhật thông số vào Brain đã train để lưu
+            let mut save_brain = trained_eval_brain;
+            save_brain.total_episodes = best_stable_brain.total_episodes + chunk_episodes + eval_games;
+            save_brain.best_overall_avg = eval_avg;
 
-            // 1. Cập nhật Stats vào Brain
-            brain.total_episodes = target_ep; // CHỐT SỐ EPISODE MỚI TẠI ĐÂY
-            brain.best_top1_avg = top_1_avg;
-            brain.best_overall_avg = overall_avg;
-            brain.best_bot10_avg = bot_10_avg;
+            // Config đã được gán trước khi train nên không cần gán lại
 
-            // 2. Cập nhật Config PBT
-            {
-                let pbt = pbt_manager.lock().unwrap();
-                if let Some(best_thread) = pbt.get_best_config_entry() {
-                    let best_cfg = best_thread.1;
-                    brain.w_empty = best_cfg.w_empty;
-                    brain.w_snake = best_cfg.w_snake;
-                    brain.w_merge = best_cfg.w_merge;
-                    brain.w_disorder = best_cfg.w_disorder;
-                }
-            }
-
-            // 3. LƯU CHECKPOINT CỨNG
-            // Lần sau loop sẽ clone từ bản này
-            best_stable_brain = brain.clone();
-
-            // 4. Lưu File
-            // Tên file lấy trực tiếp từ brain.total_episodes -> KHÔNG BAO GIỜ SAI ĐƯỢC
-            let filename = format!("brain_ep_{}.msgpack", brain.total_episodes);
-            if let Err(e) = brain.export_to_msgpack(&filename) {
-                eprintln!("❌ Lỗi lưu file: {}", e);
+            // Save Checkpoint
+            best_stable_brain = save_brain.clone(); // Cập nhật mốc neo
+            let filename = format!("brain_ep_{}.msgpack", save_brain.total_episodes);
+            if let Err(e) = save_brain.export_to_msgpack(&filename) {
+                eprintln!("❌ Save Error: {}", e);
             } else {
                 println!("💾 Saved checkpoint: {}", filename);
             }
         } else {
-            println!("❌ FAILED. Không đủ chuẩn.");
             println!(
-                "   (Yêu cầu: Top1>{:.2}, Avg>={:.2}, Bot10>={:.2})",
-                best_stable_brain.best_top1_avg,
-                best_stable_brain.best_overall_avg,
-                best_stable_brain.best_bot10_avg
+                "❌ REJECTED. (Eval {:.2} <= Record {:.2})",
+                eval_avg, best_eval_avg
             );
-
-            println!("🔄 Reverting... Về Ep {}", best_stable_brain.total_episodes);
-            // KHÔNG LÀM GÌ CẢ. Brain tự reset ở đầu vòng lặp.
+            println!("🔄 Discarding changes. Reverting to previous best.");
+            // Không làm gì cả, vòng lặp sau sẽ tự clone lại từ best_stable_brain cũ
         }
 
         println!(
-            "⏱️ Time: {:.1}s\n-----------------------------------------------------------",
+            "⏱️ Loop Time: {:.1}s\n-----------------------------------",
             duration.as_secs_f64()
         );
     }
@@ -487,46 +506,101 @@ fn run_training_parallel(
     local_scores
 }
 
-fn run_verification_parallel(
-    brain: &NTupleNetwork,  // Truyền tham chiếu (Read-only)
-    config: TrainingConfig, // Config muốn test
-    total_games: u32,       // Số lượng game (vd: 50,000)
+/// Hàm Evaluation Training: TRAIN THẬT với config cố định
+/// Khác với run_training_parallel:
+/// - Không dùng PBT evolve (config cố định)
+/// - Không có Hot Reload
+/// - Trả về brain đã train để có thể save
+fn run_evaluation_training(
+    mut brain: NTupleNetwork,    // Ownership - sẽ được train và trả về
+    config: TrainingConfig,      // Config cố định để train
+    total_games: u32,            // Số lượng game (vd: 50,000)
     num_threads: u32,
-) -> (f64, f64) {
-    // Trả về (Avg Score, Max Score)
+    gamma: f64,
+    total_target_episodes: u32,
+    start_offset: u32,
+    policy: TrainingPolicy,
+) -> (f64, f64, NTupleNetwork) {
+    // Trả về (Avg Score, Max Score, Trained Brain)
 
-    // Chia việc cho các luồng
-    let scores: Vec<f64> = (0..total_games)
-        .into_par_iter() // Rayon parallel iterator
-        .map(|_| {
-            // Mỗi game tạo một môi trường mới sạch sẽ
-            let mut env = ThreesEnv::new(0.0); // Gamma không quan trọng khi test
-            env.set_config(config);
+    // Tạo shared pointer để các thread cùng update weights
+    let brain_ptr = SharedBrain {
+        network: &mut brain as *mut NTupleNetwork,
+    };
+    let shared_brain = Arc::new(brain_ptr);
 
-            // Clone não để dùng (chỉ đọc weight, không ghi)
-            // Lưu ý: NTupleNetwork của bạn phải derive Clone
-            let mut local_brain = brain.clone();
+    let ep_per_thread = total_games / num_threads;
 
-            env.reset();
-            let mut step_count = 0;
+    // Chạy song song - mỗi thread train một phần games
+    let results: Vec<Vec<f64>> = (0..num_threads)
+        .into_par_iter()
+        .map(|t_id| {
+            let mut local_env = ThreesEnv::new(gamma);
+            local_env.set_config(config); // Config cố định
 
-            while !env.game.game_over && step_count < 20000 {
-                step_count += 1;
+            let ptr = shared_brain.network;
+            let local_brain = unsafe { &mut *ptr };
 
-                // CHƠI NGHIÊM TÚC: Expectimax (hoặc Greedy tùy bạn chọn)
-                // Tuyệt đối không có Random Move ở đây (trừ khi tiles ra ngẫu nhiên)
-                let action = env.get_best_action_expectimax(&mut local_brain);
+            let mut local_scores = Vec::with_capacity(ep_per_thread as usize);
+            let mut rng = rand::rng();
 
-                // Chỉ đi nước bước, KHÔNG TRAIN
-                env.game.step(action);
+            for local_ep in 0..ep_per_thread {
+                let current_global_ep = (local_ep * num_threads + t_id) + start_offset;
+                let progress = current_global_ep as f64 / total_target_episodes as f64;
+
+                // Alpha & Epsilon decay
+                let current_alpha = (0.01 * (1.0 - progress)).max(0.0001);
+                let current_epsilon = (0.2 * (1.0 - (progress / 0.8))).max(0.01);
+
+                // GAME LOOP
+                local_env.reset();
+                let mut step_count = 0;
+                while !local_env.game.game_over {
+                    step_count += 1;
+                    if step_count > 20000 {
+                        break;
+                    }
+
+                    let action = if rng.random_bool(current_epsilon.into()) {
+                        local_env.get_random_valid_action()
+                    } else {
+                        match policy {
+                            TrainingPolicy::Greedy => local_env.get_best_action_greedy(local_brain),
+                            TrainingPolicy::Expectimax => {
+                                local_env.get_best_action_expectimax(local_brain)
+                            }
+                        }
+                    };
+
+                    // TRAIN THẬT - update weights
+                    local_env.train_step(local_brain, action, current_alpha);
+                }
+
+                local_scores.push(local_env.game.score as f64);
+
+                // Log progress (chỉ thread 0)
+                if t_id == 0 && local_ep % 1000 == 0 {
+                    print!(
+                        "\r   Eval: {:>6}/{} | Last: {:>5.0}   ",
+                        local_ep * num_threads,
+                        total_games,
+                        local_env.game.score
+                    );
+                    use std::io::Write;
+                    std::io::stdout().flush().unwrap();
+                }
             }
 
-            env.game.score as f64
+            local_scores
         })
         .collect();
 
-    let avg = scores.iter().sum::<f64>() / total_games as f64;
-    let max = scores.iter().fold(0.0f64, |a, &b| a.max(b));
+    println!(); // Newline sau progress
 
-    (avg, max)
+    let all_scores: Vec<f64> = results.into_iter().flatten().collect();
+    let avg = all_scores.iter().sum::<f64>() / all_scores.len() as f64;
+    let max = all_scores.iter().fold(0.0f64, |a, &b| a.max(b));
+
+    (avg, max, brain)
 }
+
