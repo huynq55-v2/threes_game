@@ -36,6 +36,11 @@ pub struct NTupleNetwork {
     pub total_episodes: u32, // Lưu tổng số ván đã train (để tính alpha/epsilon)
     #[serde(default)]
     pub best_top1_avg: f64, // Lưu kỷ lục điểm số
+    // THÊM 2 DÒNG NÀY:
+    #[serde(default)]
+    pub best_overall_avg: f64,
+    #[serde(default)]
+    pub best_bot10_avg: f64,
 }
 
 impl NTupleNetwork {
@@ -53,6 +58,8 @@ impl NTupleNetwork {
             // Khởi tạo mặc định
             total_episodes: 0,
             best_top1_avg: 0.0,
+            best_overall_avg: 0.0,
+            best_bot10_avg: 0.0,
         };
 
         network.add_shared_snake();

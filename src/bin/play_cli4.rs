@@ -1,6 +1,6 @@
 use rand::Rng;
 use rayon::prelude::*;
-use std::fs::File;
+use std::fs::{self, File}; // Thêm fs để quét thư mục
 use std::io::BufReader;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -9,6 +9,9 @@ use threes_rs::hotload_config::HotLoadConfig;
 use threes_rs::{
     n_tuple_network::NTupleNetwork, pbt::PBTManager, pbt::TrainingConfig, python_module::ThreesEnv,
 };
+
+// Hằng số Tỷ lệ vàng
+const GOLDEN_RATIO: f64 = 1.61803398875;
 
 // Struct wrapper pointer (giữ nguyên)
 struct SharedBrain {
@@ -25,19 +28,19 @@ unsafe impl Send for SharedBrain {}
 unsafe impl Sync for SharedBrain {}
 
 fn main() {
-    // calculate golden ratio
-    let golden_ratio: f64 = (1.0 + 5.0f64.sqrt()) / 2.0;
-
     let num_threads = 8;
     let gamma = 0.995;
     let args: Vec<String> = env::args().collect();
 
-    // Episode override (nếu muốn force từ dòng lệnh, không thì lấy từ file)
+    // --- LOGIC 1: TỰ ĐỘNG TÌM FILE SAVE MỚI NHẤT (AUTO-DISCOVERY) ---
+    // Nếu người dùng không nhập số, tự động quét thư mục tìm file msgpack có số to nhất.
     let override_episode = if args.len() > 1 {
         args[1].parse::<usize>().unwrap_or(0) as u32
     } else {
-        0 as u32
+        find_latest_checkpoint().unwrap_or(0)
     };
+
+    println!("🔎 Start Episode: {}", override_episode);
 
     // Policy
     let policy_arg = if args.len() > 2 {
@@ -57,38 +60,45 @@ fn main() {
         }
     };
 
-    let multiplier = args[3].to_lowercase();
+    let multiplier = if args.len() > 3 {
+        args[3].to_lowercase()
+    } else {
+        "div".to_string() // Mặc định là div nếu không nhập
+    };
 
-    let mut BUFF_MULTIPLIER = 1.0;
-
+    let mut buff_multiplier = 1.0;
     if multiplier == "mul" {
-        BUFF_MULTIPLIER = golden_ratio;
+        buff_multiplier = GOLDEN_RATIO;
     } else if multiplier == "div" {
-        BUFF_MULTIPLIER = 1.0 / golden_ratio;
+        buff_multiplier = 1.0 / GOLDEN_RATIO;
     }
 
-    println!("Multiplier: {}", multiplier);
+    println!("Multiplier Strategy: {}", multiplier);
 
     // --- SETUP BRAIN ---
     let mut brain = if override_episode > 0 {
         let filename = format!("brain_ep_{}.msgpack", override_episode);
         println!("📂 Loading brain: {}", filename);
-        let b = NTupleNetwork::load_from_msgpack(&filename).expect("Không tìm thấy file!");
+        let b = NTupleNetwork::load_from_msgpack(&filename)
+            .expect("❌ Không tìm thấy file checkpoint!");
         println!(
             "🧐 LOAD DATA: E={:.1}, S={:.1}, M={:.1}, D={:.1}",
             b.w_empty, b.w_snake, b.w_merge, b.w_disorder
         );
         b
     } else {
-        println!("✨ Tạo não mới tinh...");
+        println!("✨ Tạo não mới tinh (Episode 0)...");
         NTupleNetwork::new(0.1, gamma)
     };
 
+    // Logic tương thích ngược cho file cũ
     if override_episode > 0 && brain.total_episodes == 0 {
+        println!(
+            "⚠️ File cũ chưa có total_episodes, cập nhật thủ công thành {}",
+            override_episode
+        );
         brain.total_episodes = override_episode;
     }
-
-    let mut current_global_episode = brain.total_episodes;
 
     // Safety checks
     if brain.w_empty == 0.0 {
@@ -104,12 +114,6 @@ fn main() {
         brain.w_disorder = 50.0;
     }
 
-    // Pointer setup
-    let brain_ptr = SharedBrain {
-        network: &mut brain as *mut NTupleNetwork,
-    };
-    let shared_brain = Arc::new(brain_ptr);
-
     // Config Watcher & PBT
     let hot_config = Arc::new(RwLock::new(HotLoadConfig::default()));
     start_config_watcher(hot_config.clone());
@@ -118,29 +122,24 @@ fn main() {
     let chunk_episodes = 100_000;
     let total_target_episodes = 100_000_000;
 
-    // --- LOGIC MỚI: THEO DÕI BEST TOP 1% ---
-    // Khởi tạo mức điểm chuẩn ban đầu (có thể set 0 hoặc chạy thử 1 vòng test để lấy)
-    let mut best_top1_percent_avg = 0.0;
-
-    // Backup não tốt nhất hiện tại (Deep Clone)
-    // Lưu ý: NTupleNetwork phải hỗ trợ Clone. Nếu chưa có, bạn cần thêm #[derive(Clone)] vào struct NTupleNetwork
+    // --- CHECKPOINT GỐC (SINGLE SOURCE OF TRUTH) ---
+    // Đây là bản chuẩn. Mọi vòng lặp đều clone từ đây ra.
     let mut best_stable_brain = brain.clone();
 
-    println!("🚀 Bắt đầu Training với Logic: Top 1% Average & Auto-Revert...");
+    println!("🚀 Bắt đầu Training với Logic: Top 1% Average & Strict Auto-Revert...");
+    println!(
+        "📊 Current Record: Top1% Avg = {:.2} (tại Ep {})",
+        best_stable_brain.best_top1_avg, best_stable_brain.total_episodes
+    );
 
     loop {
         let start_time = std::time::Instant::now();
 
         // Bước 0: LUÔN RESET VỀ TRẠNG THÁI ỔN ĐỊNH NHẤT
-        // Nếu vòng trước fail, brain sẽ quay về như chưa từng train vòng đó.
-        // Nếu vòng trước win, best_stable_brain đã được update ở cuối vòng lặp.
+        // Brain nháp (mutable) được tạo ra từ bản chuẩn.
         brain = best_stable_brain.clone();
 
-        // Cập nhật lại pointer trỏ vào brain mới reset
-        // (Lưu ý: SharedBrain dùng pointer raw, nên ta gán đè dữ liệu vào vùng nhớ cũ
-        // hoặc tạo Arc mới. Ở đây vì cấu trúc main, ta cần đảm bảo pointer trỏ đúng)
-        // Cách an toàn nhất trong loop này là tạo SharedBrain mới cho mỗi vòng lặp
-        // vì biến `brain` bị move/clone lại.
+        // Tạo pointer MỚI cho vòng lặp này (Quan trọng!)
         let brain_ptr = SharedBrain {
             network: &mut brain as *mut NTupleNetwork,
         };
@@ -151,28 +150,22 @@ fn main() {
         // ------------------------------------------------------
         let mut rng = rand::rng();
         let buff_idx = rng.random_range(0..4);
-        let old_vals = (
-            brain.w_empty,
-            brain.w_snake,
-            brain.w_merge,
-            brain.w_disorder,
-        );
 
         match buff_idx {
             0 => {
-                brain.w_empty *= BUFF_MULTIPLIER;
+                brain.w_empty *= buff_multiplier;
                 print!("✨ BUFF EMPTY! ");
             }
             1 => {
-                brain.w_snake *= BUFF_MULTIPLIER;
+                brain.w_snake *= buff_multiplier;
                 print!("🐍 BUFF SNAKE! ");
             }
             2 => {
-                brain.w_merge *= BUFF_MULTIPLIER;
+                brain.w_merge *= buff_multiplier;
                 print!("🔗 BUFF MERGE! ");
             }
             _ => {
-                brain.w_disorder *= BUFF_MULTIPLIER;
+                brain.w_disorder *= buff_multiplier;
                 print!("⚡ BUFF DISORDER! ");
             }
         }
@@ -183,19 +176,20 @@ fn main() {
         );
 
         // ------------------------------------------------------
-        // 2. CHẠY SONG SONG & THU THẬP ĐIỂM SỐ
+        // 2. CHẠY SONG SONG
         // ------------------------------------------------------
         let ep_per_thread = chunk_episodes as u32 / num_threads;
 
-        let current_ep_for_decay = brain.total_episodes;
+        // Lấy mốc thời gian hiện tại để tính Alpha/Epsilon
+        let current_base_ep = best_stable_brain.total_episodes;
+        // Mục tiêu của vòng này là chạy thêm chunk_episodes
+        let target_ep = current_base_ep + chunk_episodes;
 
-        // Sử dụng map của rayon để thu về vector điểm số từ các luồng
         let results: Vec<Vec<f64>> = (0..num_threads)
             .into_par_iter()
             .map(|t_id| {
                 let mut local_env = ThreesEnv::new(gamma);
 
-                // Hàm run giờ sẽ trả về danh sách điểm số của nó
                 run_training_parallel(
                     &mut local_env,
                     shared_brain_loop.clone(),
@@ -203,127 +197,148 @@ fn main() {
                     hot_config.clone(),
                     ep_per_thread,
                     total_target_episodes,
-                    current_ep_for_decay,
+                    current_base_ep, // Start offset
                     t_id,
                     num_threads,
                     training_policy,
-                    BUFF_MULTIPLIER,
+                    buff_multiplier,
                 )
             })
             .collect();
 
-        // Gộp tất cả điểm số lại thành 1 list lớn
         let mut all_scores: Vec<f64> = results.into_iter().flatten().collect();
 
         // ------------------------------------------------------
-        // 3. TÍNH TOÁN METRIC (CHI TIẾT HƠN)
+        // 3. TÍNH TOÁN METRIC (3 TIÊU CHÍ)
         // ------------------------------------------------------
-        all_scores.sort_by(|a, b| b.partial_cmp(a).unwrap()); // Giảm dần: [Cao nhất ... Thấp nhất]
+        all_scores.sort_by(|a, b| b.partial_cmp(a).unwrap());
         let total_count = all_scores.len();
 
-        // A. Top 1% (Peak)
+        // A. Top 1%
         let top_1_count = (total_count as f64 * 0.01).ceil() as usize;
         let top_1_count = top_1_count.max(1);
         let top_1_avg: f64 = all_scores[0..top_1_count].iter().sum::<f64>() / top_1_count as f64;
 
-        // B. Average (Overall)
+        // B. Average
         let overall_avg: f64 = all_scores.iter().sum::<f64>() / total_count as f64;
 
-        // C. Bottom 10% (Stability) - Lấy đuôi danh sách
+        // C. Bottom 10%
         let bot_10_count = (total_count as f64 * 0.1).ceil() as usize;
         let bot_10_count = bot_10_count.max(1);
-        // Do đã sort giảm dần, bottom nằm ở cuối
         let bot_10_avg: f64 =
             all_scores[total_count - bot_10_count..].iter().sum::<f64>() / bot_10_count as f64;
 
         let duration = start_time.elapsed();
+        println!("\n📊 Stats Loop (Target Ep {}):", target_ep);
         println!(
-            "\n📊 Stats Loop (Ep {}):",
-            brain.total_episodes + chunk_episodes
-        );
-        println!("   - Max Score:    {:.0}", all_scores[0]);
-        println!(
-            "   - Top 1% Avg:   {:.2} (Best: {:.2})",
+            "   - Top 1% Avg:   {:.2} (Rec: {:.2})",
             top_1_avg, best_stable_brain.best_top1_avg
         );
-        // Cần lưu thêm best_avg và best_bot_10 vào struct hoặc biến local nếu muốn so sánh chặt
-        // Giả sử ta thêm biến local ở ngoài loop:
-        // let mut best_overall_avg = ...;
-        // let mut best_bot_10_avg = ...;
-
-        println!("   - Overall Avg:  {:.2}", overall_avg);
-        println!("   - Bot 10% Avg:  {:.2}", bot_10_avg);
+        println!(
+            "   - Overall Avg:  {:.2} (Rec: {:.2})",
+            overall_avg, best_stable_brain.best_overall_avg
+        );
+        println!(
+            "   - Bot 10% Avg:  {:.2} (Rec: {:.2})",
+            bot_10_avg, best_stable_brain.best_bot10_avg
+        );
 
         // ------------------------------------------------------
-        // 4. QUYẾT ĐỊNH: LOGIC 3 TIÊU CHÍ (STRICT)
+        // 4. QUYẾT ĐỊNH
         // ------------------------------------------------------
 
-        // Điều kiện: Tốt hơn hoặc bằng ở cả 3 mặt trận
-        // Lưu ý: Để tránh kẹt (không bao giờ thỏa mãn), ta có thể cho phép bằng (=) hoặc kém tí xíu (epsilon)
-        // Nhưng theo yêu cầu của bác là "phải mạnh hơn":
-
-        // Bác cần thêm 2 trường này vào NTupleNetwork hoặc quản lý biến rời
-        // Giả sử biến `best_stable_brain` đã lưu đủ (bác phải thêm field vào struct NTupleNetwork nhé)
-        // Nếu chưa thêm field, ta dùng biến tạm thời ở main:
-
-        // let cond1 = top_1_avg >= best_stable_brain.best_top1_avg;
-        // Giả sử ta so sánh với chính kỷ lục của vòng trước (nếu ta lưu nó)
-        // Ở đây tôi demo logic so sánh, bác cần thêm field `best_overall_avg` và `best_bot10_avg` vào struct `NTupleNetwork` mới chạy được persistence.
-
-        // Tạm thời so sánh Top 1% là chính, 2 cái kia là phụ (>= 95% mức cũ) để tránh quá khắt khe
-        // Hoặc Strict 100% như bác muốn:
-
-        let is_better = top_1_avg > best_stable_brain.best_top1_avg &&         // Đỉnh cao phải hơn
-            overall_avg >= best_stable_brain.best_overall_avg &&   // Trung bình không được tụt
-            bot_10_avg >= best_stable_brain.best_bot10_avg; // Đáy không được thủng
+        // Điều kiện: Tốt hơn ở CẢ 3 chỉ số
+        // Mẹo: Dùng >= cho 2 chỉ số phụ để dễ thở hơn chút, > cho chỉ số chính
+        let is_better = top_1_avg > best_stable_brain.best_top1_avg
+            && overall_avg >= best_stable_brain.best_overall_avg
+            && bot_10_avg >= best_stable_brain.best_bot10_avg;
 
         if is_better {
-            // >>> WIN CASE <<<
-            println!("✅ NEW RECORD! Thỏa mãn cả 3 tiêu chí.");
+            println!("✅ NEW RECORD! Thỏa mãn 3 tiêu chí.");
 
-            brain.total_episodes += chunk_episodes;
-
-            // Update Stats
+            // 1. Cập nhật Stats vào Brain
+            brain.total_episodes = target_ep; // CHỐT SỐ EPISODE MỚI TẠI ĐÂY
             brain.best_top1_avg = top_1_avg;
-            brain.best_overall_avg = overall_avg; // <--- Cần thêm field này vào struct
-            brain.best_bot10_avg = bot_10_avg; // <--- Cần thêm field này vào struct
+            brain.best_overall_avg = overall_avg;
+            brain.best_bot10_avg = bot_10_avg;
 
-            // 4. LƯU "CHECKPOINT CỨNG" MỚI (Giữ nguyên)
-            // Lệnh này sẽ tự động lưu `brain.best_top1_avg` mới vào `best_stable_brain`
-            // để vòng lặp sau dùng làm mốc so sánh.
+            // 2. Cập nhật Config PBT
+            {
+                let pbt = pbt_manager.lock().unwrap();
+                if let Some(best_thread) = pbt.get_best_config_entry() {
+                    let best_cfg = best_thread.1;
+                    brain.w_empty = best_cfg.w_empty;
+                    brain.w_snake = best_cfg.w_snake;
+                    brain.w_merge = best_cfg.w_merge;
+                    brain.w_disorder = best_cfg.w_disorder;
+                }
+            }
+
+            // 3. LƯU CHECKPOINT CỨNG
+            // Lần sau loop sẽ clone từ bản này
             best_stable_brain = brain.clone();
 
-            // 5. Lưu File (Giữ nguyên)
-            let filename = format!("brain_ep_{}.msgpack", current_global_episode);
+            // 4. Lưu File
+            // Tên file lấy trực tiếp từ brain.total_episodes -> KHÔNG BAO GIỜ SAI ĐƯỢC
+            let filename = format!("brain_ep_{}.msgpack", brain.total_episodes);
             if let Err(e) = brain.export_to_msgpack(&filename) {
                 eprintln!("❌ Lỗi lưu file: {}", e);
             } else {
                 println!("💾 Saved checkpoint: {}", filename);
             }
         } else {
-            println!("❌ FAILED. Không thỏa mãn đủ 3 tiêu chí.");
+            println!("❌ FAILED. Không đủ chuẩn.");
             println!(
-                "   Yêu cầu: Top1 > {:.2}, Avg >= {:.2}, Bot10 >= {:.2}",
+                "   (Yêu cầu: Top1>{:.2}, Avg>={:.2}, Bot10>={:.2})",
                 best_stable_brain.best_top1_avg,
                 best_stable_brain.best_overall_avg,
                 best_stable_brain.best_bot10_avg
             );
 
-            // 🔄 SỬA DÒNG NÀY: Lấy từ best_stable_brain
-            println!(
-                "🔄 Reverting về trạng thái cũ (Ep: {}, Best: {:.2})",
-                best_stable_brain.total_episodes, best_stable_brain.best_top1_avg
-            );
-
-            // Revert biến đếm hiển thị bên ngoài cho đúng thực tế
-            current_global_episode = best_stable_brain.total_episodes;
+            println!("🔄 Reverting... Về Ep {}", best_stable_brain.total_episodes);
+            // KHÔNG LÀM GÌ CẢ. Brain tự reset ở đầu vòng lặp.
         }
 
-        println!("⏱️ Time: {:.1}s | Total Ep: {}\n-----------------------------------------------------------", duration.as_secs_f64(), current_global_episode);
+        println!(
+            "⏱️ Time: {:.1}s\n-----------------------------------------------------------",
+            duration.as_secs_f64()
+        );
     }
 }
 
-// Hàm Watcher (Giữ nguyên)
+// --- HÀM TÌM FILE MỚI NHẤT (Helper) ---
+fn find_latest_checkpoint() -> Option<u32> {
+    let mut max_ep = 0;
+    let mut found = false;
+
+    if let Ok(entries) = fs::read_dir(".") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with("brain_ep_") && name.ends_with(".msgpack") {
+                    // Cắt chuỗi để lấy số: "brain_ep_12345.msgpack" -> "12345"
+                    let num_part = name
+                        .trim_start_matches("brain_ep_")
+                        .trim_end_matches(".msgpack");
+                    if let Ok(ep) = num_part.parse::<u32>() {
+                        if ep > max_ep {
+                            max_ep = ep;
+                            found = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if found {
+        Some(max_ep)
+    } else {
+        None
+    }
+}
+
+// ... (Các hàm khác giữ nguyên: start_config_watcher, run_training_parallel) ...
+// Nhớ copy nốt hàm run_training_parallel ở code trước vào nhé!
 fn start_config_watcher(shared_hot_config: Arc<RwLock<HotLoadConfig>>) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(2));
@@ -337,7 +352,6 @@ fn start_config_watcher(shared_hot_config: Arc<RwLock<HotLoadConfig>>) {
     });
 }
 
-// Sửa hàm run_training_parallel để trả về Vec<f64>
 fn run_training_parallel(
     env: &mut ThreesEnv,
     shared_brain: Arc<SharedBrain>,
