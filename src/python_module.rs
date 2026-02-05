@@ -338,7 +338,7 @@ impl ThreesEnv {
         self.game.get_board_flat()
     }
 
-    fn score(&self) -> u32 {
+    fn score(&self) -> f64 {
         self.game.score
     }
 

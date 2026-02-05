@@ -167,6 +167,26 @@ fn main() {
             brain.w_empty, brain.w_snake, brain.w_merge, brain.w_disorder
         );
 
+        // if 1 of 4 params larger than 10000 then buff_multiplier = 1.0 / GOLDEN_RATIO
+        if brain.w_empty > 10000.0
+            || brain.w_snake > 10000.0
+            || brain.w_merge > 10000.0
+            || brain.w_disorder > 10000.0
+        {
+            buff_multiplier = 1.0 / GOLDEN_RATIO;
+        }
+
+        // if 1 of 4 params smaller than 50 then buff_multiplier = GOLDEN_RATIO
+        if brain.w_empty < 50.0
+            || brain.w_snake < 50.0
+            || brain.w_merge < 50.0
+            || brain.w_disorder < 50.0
+        {
+            buff_multiplier = GOLDEN_RATIO;
+        }
+
+        println!("-> Buff Multiplier: {:.2}", buff_multiplier);
+
         // ------------------------------------------------------
         // 2. CHẠY SONG SONG
         // ------------------------------------------------------

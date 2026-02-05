@@ -18,7 +18,7 @@ pub enum Direction {
 #[derive(Clone)]
 pub struct Game {
     pub board: [[Tile; 4]; 4],
-    pub score: u32, // calculate at each step
+    pub score: f64, // calculate at each step
     pub game_over: bool,
     pub num_move: u32,
     pub numbers: PseudoList<u32>,
@@ -38,7 +38,7 @@ pub struct GameStats {
 
 impl Game {
     pub fn new() -> Self {
-        let score = 0;
+        let score = 0.0;
         let game_over = false;
         let num_move = 0;
         let future_value = 0;
@@ -250,7 +250,7 @@ impl Game {
                 }
             }
         }
-        self.score = total_score;
+        self.score = total_score as f64;
     }
 
     pub fn get_board_flat(&self) -> [u32; 16] {
@@ -631,7 +631,7 @@ impl Game {
     /// Creates a new Game with a specific board state for testing.
     #[allow(dead_code)] // Useful for integration tests even if not used in main binary yet
     pub fn new_with_board(board: [[Tile; 4]; 4], num_move: u32) -> Self {
-        let score = 0;
+        let score = 0.0;
         let game_over = false;
         let future_value = 0;
         let hints = Vec::new();
