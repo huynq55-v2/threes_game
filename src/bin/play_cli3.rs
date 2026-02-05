@@ -198,7 +198,7 @@ fn main() {
                 // Hàm run giờ sẽ trả về danh sách điểm số của nó
                 run_training_parallel(
                     &mut local_env,
-                    shared_brain.clone(), // Pointer trỏ vào brain đang bị Buff
+                    shared_brain_loop.clone(),
                     pbt_manager.clone(),
                     hot_config.clone(),
                     ep_per_thread,
