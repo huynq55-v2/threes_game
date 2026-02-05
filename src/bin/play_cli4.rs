@@ -59,11 +59,6 @@ fn main() {
     let multiplier = args[2].to_lowercase();
 
     let mut buff_multiplier = 1.0;
-    if multiplier == "mul" {
-        buff_multiplier = GOLDEN_RATIO;
-    } else if multiplier == "div" {
-        buff_multiplier = 1.0 / GOLDEN_RATIO;
-    }
 
     println!("Multiplier Strategy: {}", multiplier);
 
@@ -181,16 +176,29 @@ fn main() {
             brain.w_empty, brain.w_snake, brain.w_merge, brain.w_disorder
         );
 
-        // if 1 of 4 params larger than 10000 then buff_multiplier = 1.0 / GOLDEN_RATIO
+        // Điều chỉnh Phase dựa trên ngưỡng
         if brain.w_empty > 100000.0
             || brain.w_snake > 100000.0
             || brain.w_merge > 100000.0
-            || brain.w_disorder > 100000.0 || brain.w_empty < 60.0
+            || brain.w_disorder > 100000.0
+        {
+            brain.phase = false; // Chuyển sang giảm
+        }
+
+        if brain.w_empty < 60.0
             || brain.w_snake < 60.0
             || brain.w_merge < 60.0
             || brain.w_disorder < 60.0
         {
-            buff_multiplier = 1.0 / buff_multiplier;
+            brain.phase = true; // Chuyển sang tăng
+        }
+
+        if brain.phase {
+            buff_multiplier = GOLDEN_RATIO;
+            print!(" (PHASE: TĂNG 📈) ");
+        } else {
+            buff_multiplier = 1.0 / GOLDEN_RATIO;
+            print!(" (PHASE: GIẢM 📉) ");
         }
 
         println!("-> Buff Multiplier: {:.2}", buff_multiplier);

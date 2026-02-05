@@ -41,6 +41,12 @@ pub struct NTupleNetwork {
     pub best_overall_avg: f64,
     #[serde(default)]
     pub best_bot10_avg: f64,
+    #[serde(default = "default_phase")]
+    pub phase: bool, // True = Tăng (Golden Ratio), False = Giảm (1/Golden Ratio)
+}
+
+fn default_phase() -> bool {
+    true
 }
 
 impl NTupleNetwork {
@@ -60,6 +66,7 @@ impl NTupleNetwork {
             best_top1_avg: 0.0,
             best_overall_avg: 0.0,
             best_bot10_avg: 0.0,
+            phase: true,
         };
 
         network.add_shared_snake();
