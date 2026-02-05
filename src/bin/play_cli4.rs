@@ -241,15 +241,36 @@ fn main() {
 
         // Điều kiện: Tốt hơn ở CẢ 3 chỉ số
         // Mẹo: Dùng >= cho 2 chỉ số phụ để dễ thở hơn chút, > cho chỉ số chính
-        let is_better = top_1_avg > best_stable_brain.best_top1_avg
-            && overall_avg >= best_stable_brain.best_overall_avg
-            && bot_10_avg >= best_stable_brain.best_bot10_avg;
+
+        // B. Ngưỡng chênh lệch cho phép (BẠN TỰ CHỈNH SỐ NÀY)
+        // Hiện tại bạn đang là 23.6 (21688/916).
+        // Đặt 30.0 là mức trần an toàn. Nếu > 30 lần tức là AI quá liều lĩnh.
+        const MAX_ALLOWED_RATIO: f64 = 5.0;
+
+        // C. Logic xét duyệt mới:
+        // 1. Average (quan trọng nhất) PHẢI tăng.
+        // 2. Top 1% không cần tăng bắt buộc, nhưng không được sụt quá 2%.
+        // 3. Bot 10% không được sụt quá 5%.
+        // 4. [MỚI] Tỷ lệ chênh lệch không được vượt quá giới hạn.
+
+        let stability_ratio = top_1_avg / bot_10_avg;
+
+        let avg_improved = overall_avg > best_stable_brain.best_overall_avg;
+        let top_safe = top_1_avg >= best_stable_brain.best_top1_avg * 0.98;
+        let bot_safe = bot_10_avg >= best_stable_brain.best_bot10_avg * 0.95;
+        let ratio_ok = stability_ratio <= MAX_ALLOWED_RATIO;
+
+        // Gom điều kiện
+        let is_better = avg_improved && top_safe && bot_safe && ratio_ok;
 
         if is_better {
-            println!("✅ NEW RECORD! Thỏa mãn 3 tiêu chí.");
+            println!(
+                "✅ NEW RECORD! Avg tăng & Tỷ lệ ổn định hợp lý ({:.1}x).",
+                stability_ratio
+            );
 
-            // 1. Cập nhật Stats vào Brain
-            brain.total_episodes = target_ep; // CHỐT SỐ EPISODE MỚI TẠI ĐÂY
+            // 1. Cập nhật Stats
+            brain.total_episodes = target_ep;
             brain.best_top1_avg = top_1_avg;
             brain.best_overall_avg = overall_avg;
             brain.best_bot10_avg = bot_10_avg;
@@ -279,16 +300,20 @@ fn main() {
                 println!("💾 Saved checkpoint: {}", filename);
             }
         } else {
-            println!("❌ FAILED. Không đủ chuẩn.");
-            println!(
-                "   (Yêu cầu: Top1>{:.2}, Avg>={:.2}, Bot10>={:.2})",
-                best_stable_brain.best_top1_avg,
-                best_stable_brain.best_overall_avg,
-                best_stable_brain.best_bot10_avg
-            );
+            println!("❌ FAILED. Không đạt chuẩn.");
+            if !ratio_ok {
+                println!(
+                    "   ⚠️ BỊ LOẠI VÌ QUÁ KHÔNG ỔN ĐỊNH: Ratio {:.1}x > Giới hạn {:.1}x",
+                    stability_ratio, MAX_ALLOWED_RATIO
+                );
+            } else {
+                println!(
+                    "   (Avg: {:.2} vs Rec {:.2})",
+                    overall_avg, best_stable_brain.best_overall_avg
+                );
+            }
 
             println!("🔄 Reverting... Về Ep {}", best_stable_brain.total_episodes);
-            // KHÔNG LÀM GÌ CẢ. Brain tự reset ở đầu vòng lặp.
         }
 
         println!(
