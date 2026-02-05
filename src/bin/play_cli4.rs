@@ -307,8 +307,9 @@ fn main() {
             best_eval_avg = eval_avg;
 
             // Cập nhật thông số vào Brain đã train để lưu
+            // Chỉ tính eval_games vì 100k train noisy chỉ dùng để tìm config
             let mut save_brain = trained_eval_brain;
-            save_brain.total_episodes = best_stable_brain.total_episodes + chunk_episodes + eval_games;
+            save_brain.total_episodes = best_stable_brain.total_episodes + eval_games;
             save_brain.best_overall_avg = eval_avg;
 
             // Config đã được gán trước khi train nên không cần gán lại
