@@ -193,6 +193,8 @@ impl ThreesEnv {
         let mut best_val = -f64::MAX;
         let mut best_action = 0;
 
+        let current_board_score = self.game.score;
+
         for action_idx in 0..4 {
             let dir = match action_idx {
                 0 => Direction::Up,
@@ -207,7 +209,13 @@ impl ThreesEnv {
             if !outcomes.is_empty() {
                 let mut expected_value = 0.0;
                 for outcome in &outcomes {
-                    expected_value += brain.predict_game(outcome);
+                    let outcome_score = outcome.score;
+                    let score_gain = (outcome_score - current_board_score) as f64;
+                    let gamma = self.gamma;
+                    let future_value = brain.predict_game(outcome) + get_composite_potential(&outcome.board, &self.config);
+                    let move_quality = score_gain + gamma * future_value;
+
+                    expected_value += move_quality;
                 }
                 expected_value /= outcomes.len() as f64;
 

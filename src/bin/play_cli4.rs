@@ -106,7 +106,7 @@ fn main() {
     start_config_watcher(hot_config.clone());
     let pbt_manager = Arc::new(Mutex::new(PBTManager::new()));
 
-    let chunk_episodes = 100_000;
+    let chunk_episodes = 80_000;
     let total_target_episodes = 100_000_000;
 
     // --- CHECKPOINT GỐC (SINGLE SOURCE OF TRUTH) ---
@@ -130,7 +130,7 @@ fn main() {
     );
 
     // Số lượng game evaluation. 50k để đánh giá kỹ.
-    let eval_games = 50_000u32;
+    let eval_games = 80_000u32;
 
     loop {
         let loop_start = std::time::Instant::now();
@@ -177,10 +177,10 @@ fn main() {
         );
 
         // Điều chỉnh Phase dựa trên ngưỡng
-        if brain.w_empty > 100000.0
-            || brain.w_snake > 100000.0
-            || brain.w_merge > 100000.0
-            || brain.w_disorder > 100000.0
+        if brain.w_empty > 10000.0
+            || brain.w_snake > 10000.0
+            || brain.w_merge > 10000.0
+            || brain.w_disorder > 10000.0
         {
             brain.phase = false; // Chuyển sang giảm
         }
@@ -236,11 +236,7 @@ fn main() {
                 // Mỗi thread mutate ngẫu nhiên 1-2 weights
                 for _ in 0..2 {
                     let param_idx = rng.random_range(0..4);
-                    let mutate_factor = if rng.random_bool(0.5) { 
-                        buff_multiplier 
-                    } else { 
-                        1.0
-                    };
+                    let mutate_factor = buff_multiplier;
                     
                     match param_idx {
                         0 => thread_config.w_empty *= mutate_factor,
