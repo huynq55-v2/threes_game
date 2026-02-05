@@ -9,13 +9,13 @@ use rmp_serde::{Deserializer, Serializer};
 
 use crate::game::Game;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TupleConfig {
     pub indices: Vec<usize>, // Các ô trên bàn cờ (ví dụ: [0,1,2,3,7])
     pub weight_index: usize, // Trỏ đến bảng weights số mấy (ví dụ: bảng số 0)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct NTupleNetwork {
     pub tuples: Vec<TupleConfig>, // Danh sách 96 con rắn
     pub weights: Vec<Vec<f32>>,   // Chỉ có 12 bảng dữ liệu thôi

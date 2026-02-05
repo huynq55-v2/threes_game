@@ -2,6 +2,8 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+const GOLDEN_RATIO: f32 = 1.61803398875;
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct TrainingConfig {
     #[serde(default)]
@@ -43,6 +45,7 @@ impl PBTManager {
         thread_id: u32,
         current_score: f32,
         current_config: TrainingConfig,
+        buff_multiplier: f32,
     ) -> (bool, TrainingConfig) {
         // 1. Cập nhật kết quả
         self.population
@@ -73,39 +76,23 @@ impl PBTManager {
             // --- MUTATION LOGIC ---
 
             // 1. Đột biến Empty
-            if rng.random_bool(0.3) {
-                new_config.w_empty *= rng.random_range(0.8..1.2);
-                new_config.w_empty = new_config.w_empty;
+            if rng.random_bool(0.5) {
+                new_config.w_empty *= buff_multiplier;
             }
 
             // 2. Đột biến Snake
-            if rng.random_bool(0.3) {
-                if new_config.w_snake < 0.001 {
-                    new_config.w_snake = rng.random_range(0.1..1.0);
-                } else {
-                    new_config.w_snake *= rng.random_range(0.8..1.2);
-                }
-                new_config.w_snake = new_config.w_snake;
+            if rng.random_bool(0.5) {
+                new_config.w_snake *= buff_multiplier;
             }
 
             // 3. Đột biến Merge (MỚI)
-            if rng.random_bool(0.3) {
-                if new_config.w_merge < 0.001 {
-                     new_config.w_merge = rng.random_range(1.0..5.0);
-                } else {
-                    new_config.w_merge *= rng.random_range(0.8..1.2);
-                }
-                new_config.w_merge = new_config.w_merge;
+            if rng.random_bool(0.5) {
+                new_config.w_merge *= buff_multiplier;
             }
 
             // 4. Đột biến Disorder (MỚI)
-            if rng.random_bool(0.3) {
-                if new_config.w_disorder < 0.001 {
-                    new_config.w_disorder = rng.random_range(0.5..2.0);
-                } else {
-                    new_config.w_disorder *= rng.random_range(0.8..1.2);
-                }
-                new_config.w_disorder = new_config.w_disorder;
+            if rng.random_bool(0.5) {
+                new_config.w_disorder *= buff_multiplier;
             }
 
             println!(
