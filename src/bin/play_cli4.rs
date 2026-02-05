@@ -155,26 +155,26 @@ fn main() {
         // 1. LOGIC BUFF (Random 1 chỉ số)
         // ------------------------------------------------------
         let mut rng = rand::rng();
-        let buff_idx = rng.random_range(0..4);
+        // let buff_idx = rng.random_range(0..4);
 
-        match buff_idx {
-            0 => {
-                brain.w_empty *= buff_multiplier;
-                print!("✨ BUFF EMPTY! ");
-            }
-            1 => {
-                brain.w_snake *= buff_multiplier;
-                print!("🐍 BUFF SNAKE! ");
-            }
-            2 => {
-                brain.w_merge *= buff_multiplier;
-                print!("🔗 BUFF MERGE! ");
-            }
-            _ => {
-                brain.w_disorder *= buff_multiplier;
-                print!("⚡ BUFF DISORDER! ");
-            }
-        }
+        // match buff_idx {
+        //     0 => {
+        //         brain.w_empty *= buff_multiplier;
+        //         print!("✨ BUFF EMPTY! ");
+        //     }
+        //     1 => {
+        //         brain.w_snake *= buff_multiplier;
+        //         print!("🐍 BUFF SNAKE! ");
+        //     }
+        //     2 => {
+        //         brain.w_merge *= buff_multiplier;
+        //         print!("🔗 BUFF MERGE! ");
+        //     }
+        //     _ => {
+        //         brain.w_disorder *= buff_multiplier;
+        //         print!("⚡ BUFF DISORDER! ");
+        //     }
+        // }
 
         println!(
             "-> Test Config: {:.1}/{:.1}/{:.1}/{:.1}",
@@ -185,100 +185,193 @@ fn main() {
         if brain.w_empty > 100000.0
             || brain.w_snake > 100000.0
             || brain.w_merge > 100000.0
-            || brain.w_disorder > 100000.0
-        {
-            buff_multiplier = 1.0 / GOLDEN_RATIO;
-        }
-
-        // if 1 of 4 params smaller than 50 then buff_multiplier = GOLDEN_RATIO
-        if brain.w_empty < 60.0
+            || brain.w_disorder > 100000.0 || brain.w_empty < 60.0
             || brain.w_snake < 60.0
             || brain.w_merge < 60.0
             || brain.w_disorder < 60.0
         {
-            buff_multiplier = GOLDEN_RATIO;
+            buff_multiplier = 1.0 / buff_multiplier;
         }
 
         println!("-> Buff Multiplier: {:.2}", buff_multiplier);
 
         // ============================================================
-        // BƯỚC 1: TRAINING PHASE (100k games - "Học bẩn")
+        // BƯỚC 1: PARALLEL TRAINING - Mỗi thread clone brain riêng
+        // Mục đích: Tìm CONFIG tối ưu cho brain hiện tại
         // ============================================================
-        println!("🏋️ Training Phase ({} games)...", chunk_episodes);
+        println!("🏋️ Training Phase ({} games, {} threads)...", chunk_episodes, num_threads);
 
         let ep_per_thread = chunk_episodes as u32 / num_threads;
         let current_base_ep = best_stable_brain.total_episodes;
-        let target_ep = current_base_ep + chunk_episodes;
 
-        let results: Vec<Vec<f64>> = (0..num_threads)
+        // Clone brain gốc để share (read-only reference)
+        let base_brain = best_stable_brain.clone();
+        let base_config = TrainingConfig {
+            w_empty: brain.w_empty,
+            w_snake: brain.w_snake,
+            w_merge: brain.w_merge,
+            w_disorder: brain.w_disorder,
+        };
+
+        // Mỗi thread trả về (avg_score, trained_brain, config)
+        let thread_results: Vec<(f64, NTupleNetwork, TrainingConfig)> = (0..num_threads)
             .into_par_iter()
             .map(|t_id| {
+                // Clone brain RIÊNG cho thread này
+                let mut local_brain = base_brain.clone();
                 let mut local_env = ThreesEnv::new(gamma);
+                let mut rng = rand::rng();
 
-                run_training_parallel(
-                    &mut local_env,
-                    shared_brain_loop.clone(),
-                    pbt_manager.clone(),
-                    hot_config.clone(),
-                    ep_per_thread,
-                    total_target_episodes,
-                    current_base_ep,
-                    t_id,
-                    num_threads,
-                    training_policy,
-                    buff_multiplier,
-                )
+                // Tạo config riêng cho thread này (mutate từ base)
+                let mut thread_config = base_config;
+                
+                // Mỗi thread mutate ngẫu nhiên 1-2 weights
+                for _ in 0..2 {
+                    let param_idx = rng.random_range(0..4);
+                    let mutate_factor = if rng.random_bool(0.5) { 
+                        buff_multiplier 
+                    } else { 
+                        1.0
+                    };
+                    
+                    match param_idx {
+                        0 => thread_config.w_empty *= mutate_factor,
+                        1 => thread_config.w_snake *= mutate_factor,
+                        2 => thread_config.w_merge *= mutate_factor,
+                        _ => thread_config.w_disorder *= mutate_factor,
+                    }
+                }
+
+                local_env.set_config(thread_config);
+                local_brain.w_empty = thread_config.w_empty;
+                local_brain.w_snake = thread_config.w_snake;
+                local_brain.w_merge = thread_config.w_merge;
+                local_brain.w_disorder = thread_config.w_disorder;
+
+                // Train riêng biệt
+                let mut total_score = 0.0;
+                for local_ep in 0..ep_per_thread {
+                    let current_global_ep = (local_ep * num_threads + t_id) + current_base_ep;
+                    let progress = current_global_ep as f64 / total_target_episodes as f64;
+
+                    let current_alpha = (0.01 * (1.0 - progress)).max(0.0001);
+                    let current_epsilon = (0.2 * (1.0 - (progress / 0.8))).max(0.01);
+
+                    local_env.reset();
+                    let mut step_count = 0;
+                    while !local_env.game.game_over {
+                        step_count += 1;
+                        if step_count > 20000 { break; }
+
+                        let action = if rng.random_bool(current_epsilon.into()) {
+                            local_env.get_random_valid_action()
+                        } else {
+                            match training_policy {
+                                TrainingPolicy::Greedy => local_env.get_best_action_greedy(&mut local_brain),
+                                TrainingPolicy::Expectimax => local_env.get_best_action_expectimax(&mut local_brain),
+                            }
+                        };
+
+                        local_env.train_step(&mut local_brain, action, current_alpha);
+                    }
+
+                    total_score += local_env.game.score as f64;
+
+                    // Log progress (chỉ thread 0)
+                    if t_id == 0 && local_ep % 2000 == 0 {
+                        let running_avg = total_score / (local_ep + 1) as f64;
+                        print!(
+                            "\r   T0: {:>5}/{} | Avg: {:>5.0} | Cfg: S{:.0} M{:.0}   ",
+                            local_ep, ep_per_thread, running_avg, 
+                            thread_config.w_snake, thread_config.w_merge
+                        );
+                        use std::io::Write;
+                        std::io::stdout().flush().unwrap();
+                    }
+                }
+
+                let avg_score = total_score / ep_per_thread as f64;
+                (avg_score, local_brain, thread_config)
             })
             .collect();
 
-        let all_scores: Vec<f64> = results.into_iter().flatten().collect();
-        let train_avg = all_scores.iter().sum::<f64>() / all_scores.len() as f64;
-        println!("   -> Training Avg (Noisy): {:.2}", train_avg);
+        println!(); // Newline sau progress
+
+        // Tìm best config và merge weights
+        let mut best_score = 0.0f64;
+        let mut best_config = base_config;
+        
+        println!("   Thread Results:");
+        for (i, (score, _, cfg)) in thread_results.iter().enumerate() {
+            println!(
+                "   T{}: Avg={:.0} | E={:.0} S={:.0} M={:.0} D={:.0}",
+                i, score, cfg.w_empty, cfg.w_snake, cfg.w_merge, cfg.w_disorder
+            );
+            if *score > best_score {
+                best_score = *score;
+                best_config = *cfg;
+            }
+        }
+
+        // Merge weights bằng Weighted Average (theo điểm)
+        let total_weight: f64 = thread_results.iter().map(|(s, _, _)| s).sum();
+        
+        // Reset brain weights về 0 trước khi merge
+        for tuple in brain.tuples.iter_mut() {
+            for w in tuple.weights.iter_mut() {
+                *w = 0.0;
+            }
+        }
+
+        // Weighted average merge
+        for (score, trained_brain, _) in thread_results.iter() {
+            let weight = score / total_weight;
+            for (i, tuple) in trained_brain.tuples.iter().enumerate() {
+                for (j, w) in tuple.weights.iter().enumerate() {
+                    brain.tuples[i].weights[j] += w * weight;
+                }
+            }
+        }
+
+        let train_avg = best_score;
+        println!("   -> Best Config: E={:.0} S={:.0} M={:.0} D={:.0} (Avg: {:.0})",
+            best_config.w_empty, best_config.w_snake, best_config.w_merge, best_config.w_disorder, train_avg
+        );
 
         // ============================================================
-        // BƯỚC 2: SELECT CONFIG PHASE
+        // BƯỚC 2: SELECT CONFIG PHASE (Đã tích hợp ở trên)
+        // best_config đã được tìm ra từ Thread Results
         // ============================================================
-        let best_pbt_config = {
-            let pbt = pbt_manager.lock().unwrap();
-            pbt.get_best_config_entry()
-                .map(|x| x.1)
-                .unwrap_or(TrainingConfig {
-                    w_empty: brain.w_empty,
-                    w_snake: brain.w_snake,
-                    w_merge: brain.w_merge,
-                    w_disorder: brain.w_disorder,
-                })
-        };
 
         // ============================================================
         // BƯỚC 3: EVALUATION TRAINING (50k games)
         // Lấy MODEL ỔN ĐỊNH + CONFIG MỚI, TRAIN THẬT để đánh giá
         // ============================================================
         println!(
-            "� Evaluation Training ({} games) with Best Config...",
+            "📊 Evaluation Training ({} games) with Best Config...",
             eval_games
         );
         println!(
             "   Cfg: Empty={:.1} Snake={:.1} Merge={:.1} Disorder={:.1}",
-            best_pbt_config.w_empty,
-            best_pbt_config.w_snake,
-            best_pbt_config.w_merge,
-            best_pbt_config.w_disorder
+            best_config.w_empty,
+            best_config.w_snake,
+            best_config.w_merge,
+            best_config.w_disorder
         );
 
         // Clone model ổn định để train evaluation
         let mut eval_brain = best_stable_brain.clone();
         
         // Gán config mới vào eval_brain
-        eval_brain.w_empty = best_pbt_config.w_empty;
-        eval_brain.w_snake = best_pbt_config.w_snake;
-        eval_brain.w_merge = best_pbt_config.w_merge;
-        eval_brain.w_disorder = best_pbt_config.w_disorder;
+        eval_brain.w_empty = best_config.w_empty;
+        eval_brain.w_snake = best_config.w_snake;
+        eval_brain.w_merge = best_config.w_merge;
+        eval_brain.w_disorder = best_config.w_disorder;
 
         // Train thật 50k games với config mới
         let (eval_avg, eval_max, trained_eval_brain) = run_evaluation_training(
             eval_brain,
-            best_pbt_config,
+            best_config,
             eval_games,
             num_threads,
             gamma,
