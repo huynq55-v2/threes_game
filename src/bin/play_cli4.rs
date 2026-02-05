@@ -34,11 +34,7 @@ fn main() {
 
     // --- LOGIC 1: TỰ ĐỘNG TÌM FILE SAVE MỚI NHẤT (AUTO-DISCOVERY) ---
     // Nếu người dùng không nhập số, tự động quét thư mục tìm file msgpack có số to nhất.
-    let override_episode = if args.len() > 1 {
-        args[1].parse::<usize>().unwrap_or(0) as u32
-    } else {
-        find_latest_checkpoint().unwrap_or(0)
-    };
+    let override_episode = find_latest_checkpoint().unwrap_or(0);
 
     println!("🔎 Start Episode: {}", override_episode);
 
@@ -60,11 +56,7 @@ fn main() {
         }
     };
 
-    let multiplier = if args.len() > 3 {
-        args[3].to_lowercase()
-    } else {
-        "div".to_string() // Mặc định là div nếu không nhập
-    };
+    let multiplier = args[2].to_lowercase();
 
     let mut buff_multiplier = 1.0;
     if multiplier == "mul" {
@@ -306,7 +298,6 @@ fn main() {
     }
 }
 
-// --- HÀM TÌM FILE MỚI NHẤT (Helper) ---
 fn find_latest_checkpoint() -> Option<u32> {
     let mut max_ep = 0;
     let mut found = false;
@@ -315,13 +306,15 @@ fn find_latest_checkpoint() -> Option<u32> {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                // Kiểm tra xem có đúng định dạng file không
                 if name.starts_with("brain_ep_") && name.ends_with(".msgpack") {
-                    // Cắt chuỗi để lấy số: "brain_ep_12345.msgpack" -> "12345"
                     let num_part = name
                         .trim_start_matches("brain_ep_")
                         .trim_end_matches(".msgpack");
+
                     if let Ok(ep) = num_part.parse::<u32>() {
-                        if ep > max_ep {
+                        println!("  🔍 Found: {} (Ep: {})", name, ep); // Log để bác thấy nó tìm được gì
+                        if ep >= max_ep {
                             max_ep = ep;
                             found = true;
                         }
@@ -330,9 +323,12 @@ fn find_latest_checkpoint() -> Option<u32> {
             }
         }
     }
+
     if found {
+        println!("✅ Auto-discovered latest checkpoint: Ep {}", max_ep);
         Some(max_ep)
     } else {
+        println!("⚠️ No checkpoints found in current directory.");
         None
     }
 }
@@ -378,19 +374,12 @@ fn run_training_parallel(
     let brain = unsafe { &mut *ptr };
 
     // KHỞI TẠO CONFIG CHO THREAD NÀY
-    let mut pbt_config = if thread_id == 0 {
+    let mut pbt_config = {
         TrainingConfig {
             w_empty: brain.w_empty,
             w_snake: brain.w_snake,
             w_merge: brain.w_merge,
             w_disorder: brain.w_disorder,
-        }
-    } else {
-        TrainingConfig {
-            w_empty: (brain.w_empty * rng.random_range(0.9..1.1)),
-            w_snake: (brain.w_snake * rng.random_range(0.9..1.1)),
-            w_merge: (brain.w_merge * rng.random_range(0.9..1.1)),
-            w_disorder: (brain.w_disorder * rng.random_range(0.9..1.1)),
         }
     };
 

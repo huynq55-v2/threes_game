@@ -23,8 +23,8 @@ impl Default for TrainingConfig {
         Self {
             w_empty: 50.0,
             w_snake: 50.0,
-            w_merge: 15.0,   // Khuyến khích gộp bài
-            w_disorder: 5.0, // Phạt sự lộn xộn (số to cạnh số bé)
+            w_merge: 50.0,   // Khuyến khích gộp bài
+            w_disorder: 50.0, // Phạt sự lộn xộn (số to cạnh số bé)
         }
     }
 }
