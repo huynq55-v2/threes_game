@@ -1,7 +1,3 @@
 {
-    "w_empty_override": -1.0,
-    "w_snake_override": -1.0,
-    "w_merge_override": -1.0,
-    "w_disorder_override": -1.0,
-    "alpha_override": -1.0
+    "w_snake_override": 0.0
 }

@@ -104,6 +104,7 @@ fn main() {
     // Config Watcher & PBT
     let hot_config = Arc::new(RwLock::new(HotLoadConfig::default()));
     start_config_watcher(hot_config.clone());
+    println!("🔥 Hot Reload ENABLED - Đang theo dõi config.json");
     let pbt_manager = Arc::new(Mutex::new(PBTManager::new()));
 
     let chunk_episodes = 80_000;
@@ -185,13 +186,13 @@ fn main() {
             brain.phase = false; // Chuyển sang giảm
         }
 
-        if brain.w_empty < 60.0
-            || brain.w_snake < 60.0
-            || brain.w_merge < 60.0
-            || brain.w_disorder < 60.0
-        {
-            brain.phase = true; // Chuyển sang tăng
-        }
+        // if brain.w_empty < 60.0
+        //     || brain.w_snake < 60.0
+        //     || brain.w_merge < 60.0
+        //     || brain.w_disorder < 60.0
+        // {
+        //     brain.phase = true; // Chuyển sang tăng
+        // }
 
         if brain.phase {
             buff_multiplier = GOLDEN_RATIO;
@@ -207,7 +208,10 @@ fn main() {
         // BƯỚC 1: PARALLEL TRAINING - Mỗi thread clone brain riêng
         // Mục đích: Tìm CONFIG tối ưu cho brain hiện tại
         // ============================================================
-        println!("🏋️ Training Phase ({} games, {} threads)...", chunk_episodes, num_threads);
+        println!(
+            "🏋️ Training Phase ({} games, {} threads)...",
+            chunk_episodes, num_threads
+        );
 
         let ep_per_thread = chunk_episodes as u32 / num_threads;
         let current_base_ep = best_stable_brain.total_episodes;
@@ -221,6 +225,9 @@ fn main() {
             w_disorder: brain.w_disorder,
         };
 
+        // Clone hot_config để share vào các thread
+        let hot_config_clone = hot_config.clone();
+
         // Mỗi thread trả về (avg_score, trained_brain, config)
         let thread_results: Vec<(f64, NTupleNetwork, TrainingConfig)> = (0..num_threads)
             .into_par_iter()
@@ -232,12 +239,13 @@ fn main() {
 
                 // Tạo config riêng cho thread này (mutate từ base)
                 let mut thread_config = base_config;
-                
+
                 // Mỗi thread mutate ngẫu nhiên 1-2 weights
                 for _ in 0..2 {
                     let param_idx = rng.random_range(0..4);
-                    let mutate_factor = buff_multiplier;
-                    
+                    let mut mutate_factor = rng.random_range(1..6) as f64;
+                    mutate_factor *= buff_multiplier;
+
                     match param_idx {
                         0 => thread_config.w_empty *= mutate_factor,
                         1 => thread_config.w_snake *= mutate_factor,
@@ -246,7 +254,6 @@ fn main() {
                     }
                 }
 
-                local_env.set_config(thread_config);
                 local_brain.w_empty = thread_config.w_empty;
                 local_brain.w_snake = thread_config.w_snake;
                 local_brain.w_merge = thread_config.w_merge;
@@ -258,21 +265,53 @@ fn main() {
                     let current_global_ep = (local_ep * num_threads + t_id) + current_base_ep;
                     let progress = current_global_ep as f64 / total_target_episodes as f64;
 
-                    let current_alpha = (0.01 * (1.0 - progress)).max(0.0001);
+                    // ============ HOT RELOAD - ĐỌC CONFIG.JSON ============
+                    let current_hot = *hot_config_clone.read().unwrap();
+                    let mut effective_config = thread_config;
+
+                    if let Some(v) = current_hot.w_empty_override {
+                        effective_config.w_empty = v;
+                    }
+                    if let Some(v) = current_hot.w_snake_override {
+                        effective_config.w_snake = v;
+                    }
+                    if let Some(v) = current_hot.w_merge_override {
+                        effective_config.w_merge = v;
+                    }
+                    if let Some(v) = current_hot.w_disorder_override {
+                        effective_config.w_disorder = v;
+                    }
+
+                    local_env.set_config(effective_config);
+
+                    // 🔥 QUAN TRỌNG: Cập nhật ngược lại để báo cáo cuối thread và Best Config mang số này!
+                    thread_config = effective_config;
+                    // ========================================================
+
+                    let mut current_alpha = (0.01 * (1.0 - progress)).max(0.0001);
+                    if let Some(v) = current_hot.alpha_override {
+                        current_alpha = v;
+                    }
                     let current_epsilon = (0.2 * (1.0 - (progress / 0.8))).max(0.01);
 
                     local_env.reset();
                     let mut step_count = 0;
                     while !local_env.game.game_over {
                         step_count += 1;
-                        if step_count > 20000 { break; }
+                        if step_count > 20000 {
+                            break;
+                        }
 
                         let action = if rng.random_bool(current_epsilon.into()) {
                             local_env.get_random_valid_action()
                         } else {
                             match training_policy {
-                                TrainingPolicy::Greedy => local_env.get_best_action_greedy(&mut local_brain),
-                                TrainingPolicy::Expectimax => local_env.get_best_action_expectimax(&mut local_brain),
+                                TrainingPolicy::Greedy => {
+                                    local_env.get_best_action_greedy(&mut local_brain)
+                                }
+                                TrainingPolicy::Expectimax => {
+                                    local_env.get_best_action_expectimax(&mut local_brain)
+                                }
                             }
                         };
 
@@ -286,8 +325,11 @@ fn main() {
                         let running_avg = total_score / (local_ep + 1) as f64;
                         print!(
                             "\r   T0: {:>5}/{} | Avg: {:>5.0} | Cfg: S{:.0} M{:.0}   ",
-                            local_ep, ep_per_thread, running_avg, 
-                            thread_config.w_snake, thread_config.w_merge
+                            local_ep,
+                            ep_per_thread,
+                            running_avg,
+                            effective_config.w_snake,
+                            effective_config.w_merge
                         );
                         use std::io::Write;
                         std::io::stdout().flush().unwrap();
@@ -304,7 +346,7 @@ fn main() {
         // Tìm best config và merge weights
         let mut best_score = 0.0f64;
         let mut best_config = base_config;
-        
+
         println!("   Thread Results:");
         for (i, (score, _, cfg)) in thread_results.iter().enumerate() {
             println!(
@@ -320,28 +362,35 @@ fn main() {
         // Merge weights bằng Softmax Weighted Averaging (Chuyên nghiệp hơn Linear)
         // Weight_i = exp(Score_i / T) / Sum(exp(Score_j / T))
         // T (Temperature) cao -> Merge đều. T thấp -> Chọn lọc người giỏi nhất.
-        let max_score = thread_results.iter().map(|(s, _, _)| *s).fold(0.0, f64::max);
+        let max_score = thread_results
+            .iter()
+            .map(|(s, _, _)| *s)
+            .fold(0.0, f64::max);
         let temperature = max_score * 0.1; // T = 10% của max score
-        
+
         // Tính mẫu số (denominator) ổn định số học (trừ max_score để tránh overflow exp)
         let mut sum_exp = 0.0;
         let mut softmax_weights = Vec::new();
-        
+
         for (score, _, _) in &thread_results {
             let val = ((score - max_score) / temperature).exp();
             sum_exp += val;
             softmax_weights.push(val);
         }
-        
+
         // Normalize weights
         for w in &mut softmax_weights {
             *w /= sum_exp;
         }
 
-        println!("   -> Softmax Merge Weights: {:?}", 
-            softmax_weights.iter().map(|w| (w * 100.0).round() as i32).collect::<Vec<_>>()
+        println!(
+            "   -> Softmax Merge Weights: {:?}",
+            softmax_weights
+                .iter()
+                .map(|w| (w * 100.0).round() as i32)
+                .collect::<Vec<_>>()
         );
-        
+
         // Reset brain weights về 0 trước khi merge
         // Lưu ý: weights nằm ở cấp Network, không phải trong TupleConfig
         for w_table in brain.weights.iter_mut() {
@@ -353,7 +402,7 @@ fn main() {
         // Softmax Weighted Merge
         for (idx, (_, trained_brain, _)) in thread_results.iter().enumerate() {
             let weight = softmax_weights[idx];
-            
+
             // Duyệt qua từng bảng weights (Master Weights)
             for (table_idx, w_table) in trained_brain.weights.iter().enumerate() {
                 // Cộng dồn vào bảng tương ứng của brain chính
@@ -364,8 +413,13 @@ fn main() {
         }
 
         let train_avg = best_score;
-        println!("   -> Best Config: E={:.0} S={:.0} M={:.0} D={:.0} (Avg: {:.0})",
-            best_config.w_empty, best_config.w_snake, best_config.w_merge, best_config.w_disorder, train_avg
+        println!(
+            "   -> Best Config: E={:.3} S={:.3} M={:.3} D={:.3} (Avg: {:.0})",
+            best_config.w_empty,
+            best_config.w_snake,
+            best_config.w_merge,
+            best_config.w_disorder,
+            train_avg
         );
 
         // ============================================================
@@ -373,38 +427,51 @@ fn main() {
         // best_config đã được tìm ra từ Thread Results
         // ============================================================
 
-        // ============================================================
-        // BƯỚC 3: EVALUATION TRAINING (50k games)
-        // Lấy MODEL ỔN ĐỊNH + CONFIG MỚI, TRAIN THẬT để đánh giá
-        // ============================================================
+        // In ra config thực tế sẽ dùng cho Eval (đã tính đến Hot Reload nếu có)
+        let current_hot_val = *hot_config.read().unwrap();
+        let mut actual_eval_config = best_config;
+        if let Some(v) = current_hot_val.w_empty_override {
+            actual_eval_config.w_empty = v;
+        }
+        if let Some(v) = current_hot_val.w_snake_override {
+            actual_eval_config.w_snake = v;
+        }
+        if let Some(v) = current_hot_val.w_merge_override {
+            actual_eval_config.w_merge = v;
+        }
+        if let Some(v) = current_hot_val.w_disorder_override {
+            actual_eval_config.w_disorder = v;
+        }
+
         println!(
             "📊 Evaluation Training ({} games) with Best Config...",
             eval_games
         );
         println!(
-            "   Cfg: Empty={:.1} Snake={:.1} Merge={:.1} Disorder={:.1}",
-            best_config.w_empty,
-            best_config.w_snake,
-            best_config.w_merge,
-            best_config.w_disorder
+            "   Cfg Thực Tế: Empty={:.1} Snake={:.1} Merge={:.1} Disorder={:.1}",
+            actual_eval_config.w_empty,
+            actual_eval_config.w_snake,
+            actual_eval_config.w_merge,
+            actual_eval_config.w_disorder
         );
 
         // Clone model ổn định để train evaluation
         let mut eval_brain = best_stable_brain.clone();
-        
+
         // Best config đã in ở trên
 
         // Clone MERGED BRAIN để train evaluation
         // Đây là điểm quan trọng: Tận dụng kiến thức đã học và merge từ 100k games trước
         let mut eval_brain = brain.clone();
-        
+
         // Gán config tối ưu vào eval_brain
         eval_brain.w_empty = best_config.w_empty;
         eval_brain.w_snake = best_config.w_snake;
         eval_brain.w_merge = best_config.w_merge;
         eval_brain.w_disorder = best_config.w_disorder;
 
-        // Train thật 50k games với config mới trên nền merged brain
+        // Train thật 80k games với config mới trên nền merged brain
+        // Truyền hot_config để có thể override bất cứ lúc nào!
         let (eval_avg, eval_max, trained_eval_brain) = run_evaluation_training(
             eval_brain,
             best_config,
@@ -414,6 +481,7 @@ fn main() {
             total_target_episodes,
             best_stable_brain.total_episodes + chunk_episodes, // Offset đã tăng lên
             training_policy,
+            hot_config.clone(), // 🔥 TRUYỀN HOT CONFIG VÀO!
         );
 
         let duration = loop_start.elapsed();
@@ -427,10 +495,7 @@ fn main() {
         // Chỉ save nếu điểm Eval cao hơn kỷ lục cũ
         // ============================================================
         if eval_avg > best_eval_avg {
-            println!(
-                "✅ NEW RECORD! ({:.2} > {:.2})",
-                eval_avg, best_eval_avg
-            );
+            println!("✅ NEW RECORD! ({:.2} > {:.2})", eval_avg, best_eval_avg);
 
             // Cập nhật kỷ lục
             best_eval_avg = eval_avg;
@@ -438,7 +503,8 @@ fn main() {
             // Cập nhật thông số vào Brain đã train để lưu
             // TÍNH TOÀN BỘ: 100k học bẩn + 50k học thật đều được ghi nhận
             let mut save_brain = trained_eval_brain;
-            save_brain.total_episodes = best_stable_brain.total_episodes + chunk_episodes + eval_games;
+            save_brain.total_episodes =
+                best_stable_brain.total_episodes + chunk_episodes + eval_games;
             save_brain.best_overall_avg = eval_avg;
 
             // Config đã được gán trước khi train nên không cần gán lại
@@ -505,13 +571,60 @@ fn find_latest_checkpoint() -> Option<u32> {
 // ... (Các hàm khác giữ nguyên: start_config_watcher, run_training_parallel) ...
 // Nhớ copy nốt hàm run_training_parallel ở code trước vào nhé!
 fn start_config_watcher(shared_hot_config: Arc<RwLock<HotLoadConfig>>) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(2));
-        if let Ok(file) = File::open("config.json") {
-            let reader = BufReader::new(file);
-            if let Ok(new_cfg) = serde_json::from_reader(reader) {
-                let mut write_guard = shared_hot_config.write().unwrap();
-                *write_guard = new_cfg;
+    thread::spawn(move || {
+        let mut last_cfg = HotLoadConfig::default();
+        loop {
+            thread::sleep(Duration::from_secs(2));
+            if let Ok(file) = File::open("config.json") {
+                let reader = BufReader::new(file);
+                match serde_json::from_reader::<_, HotLoadConfig>(reader) {
+                    Ok(new_cfg) => {
+                        // Chỉ log nếu config thực sự thay đổi
+                        let mut changed = false;
+                        if new_cfg.w_empty_override != last_cfg.w_empty_override {
+                            changed = true;
+                        }
+                        if new_cfg.w_snake_override != last_cfg.w_snake_override {
+                            changed = true;
+                        }
+                        if new_cfg.w_merge_override != last_cfg.w_merge_override {
+                            changed = true;
+                        }
+                        if new_cfg.w_disorder_override != last_cfg.w_disorder_override {
+                            changed = true;
+                        }
+                        if new_cfg.alpha_override != last_cfg.alpha_override {
+                            changed = true;
+                        }
+
+                        if changed {
+                            print!("\n🔥 HOT RELOAD (Overrides): ");
+                            if let Some(v) = new_cfg.w_empty_override {
+                                print!("Empty={:.1} ", v);
+                            }
+                            if let Some(v) = new_cfg.w_snake_override {
+                                print!("Snake={:.1} ", v);
+                            }
+                            if let Some(v) = new_cfg.w_merge_override {
+                                print!("Merge={:.1} ", v);
+                            }
+                            if let Some(v) = new_cfg.w_disorder_override {
+                                print!("DisOrder={:.1} ", v);
+                            }
+                            if let Some(v) = new_cfg.alpha_override {
+                                print!("α={:.4} ", v);
+                            }
+                            println!();
+
+                            last_cfg = new_cfg.clone(); // Clone để so sánh lần sau
+                        }
+                        let mut write_guard = shared_hot_config.write().unwrap();
+                        *write_guard = new_cfg;
+                    }
+                    Err(_e) => {
+                        // Bỏ qua lỗi parse để không làm phiền console
+                    }
+                }
             }
         }
     });
@@ -559,25 +672,29 @@ fn run_training_parallel(
         // HOT RELOAD
         let current_hot = *hot_config.read().unwrap();
         let mut effective_config = pbt_config;
-        if current_hot.w_empty_override > 0.0 {
-            effective_config.w_empty = current_hot.w_empty_override;
+        if let Some(v) = current_hot.w_empty_override {
+            effective_config.w_empty = v;
         }
-        if current_hot.w_snake_override > 0.0 {
-            effective_config.w_snake = current_hot.w_snake_override;
+        if let Some(v) = current_hot.w_snake_override {
+            effective_config.w_snake = v;
         }
-        if current_hot.w_merge_override > 0.0 {
-            effective_config.w_merge = current_hot.w_merge_override;
+        if let Some(v) = current_hot.w_merge_override {
+            effective_config.w_merge = v;
         }
-        if current_hot.w_disorder_override > 0.0 {
-            effective_config.w_disorder = current_hot.w_disorder_override;
+        if let Some(v) = current_hot.w_disorder_override {
+            effective_config.w_disorder = v;
         }
 
         env.set_config(effective_config);
 
+        // Cập nhật ngược lại pbt_config để báo cáo cuối thread chính xác
+        pbt_config = effective_config;
+        // ========================================================
+
         // Alpha & Epsilon
         let mut current_alpha = (0.01 * (1.0 - progress)).max(0.0001);
-        if current_hot.alpha_override > 0.0 {
-            current_alpha = current_hot.alpha_override;
+        if let Some(v) = current_hot.alpha_override {
+            current_alpha = v;
         }
         let current_epsilon = (0.2 * (1.0 - (progress / 0.8))).max(0.01);
 
@@ -642,14 +759,15 @@ fn run_training_parallel(
 /// - Không có Hot Reload
 /// - Trả về brain đã train để có thể save
 fn run_evaluation_training(
-    mut brain: NTupleNetwork,    // Ownership - sẽ được train và trả về
-    config: TrainingConfig,      // Config cố định để train
-    total_games: u32,            // Số lượng game (vd: 50,000)
+    mut brain: NTupleNetwork, // Ownership - sẽ được train và trả về
+    config: TrainingConfig,   // Config cơ sở để train
+    total_games: u32,         // Số lượng game (vd: 80,000)
     num_threads: u32,
     gamma: f64,
     total_target_episodes: u32,
     start_offset: u32,
     policy: TrainingPolicy,
+    hot_config: Arc<RwLock<HotLoadConfig>>, // 🔥 HOT CONFIG ĐÃ THÊM!
 ) -> (f64, f64, NTupleNetwork) {
     // Trả về (Avg Score, Max Score, Trained Brain)
 
@@ -666,7 +784,6 @@ fn run_evaluation_training(
         .into_par_iter()
         .map(|t_id| {
             let mut local_env = ThreesEnv::new(gamma);
-            local_env.set_config(config); // Config cố định
 
             let ptr = shared_brain.network;
             let local_brain = unsafe { &mut *ptr };
@@ -678,8 +795,37 @@ fn run_evaluation_training(
                 let current_global_ep = (local_ep * num_threads + t_id) + start_offset;
                 let progress = current_global_ep as f64 / total_target_episodes as f64;
 
+                // ============ HOT RELOAD - ĐỌC CONFIG.JSON ============
+                let current_hot = *hot_config.read().unwrap();
+                let mut effective_config = config; // Bắt đầu từ config cơ sở
+
+                if let Some(v) = current_hot.w_empty_override {
+                    effective_config.w_empty = v;
+                }
+                if let Some(v) = current_hot.w_snake_override {
+                    effective_config.w_snake = v;
+                }
+                if let Some(v) = current_hot.w_merge_override {
+                    effective_config.w_merge = v;
+                }
+                if let Some(v) = current_hot.w_disorder_override {
+                    effective_config.w_disorder = v;
+                }
+
+                local_env.set_config(effective_config);
+
+                // Cập nhật thông số vào brain để khi Save nó mang thông số mới này!
+                local_brain.w_empty = effective_config.w_empty;
+                local_brain.w_snake = effective_config.w_snake;
+                local_brain.w_merge = effective_config.w_merge;
+                local_brain.w_disorder = effective_config.w_disorder;
+                // ========================================================
+
                 // Alpha & Epsilon decay
-                let current_alpha = (0.01 * (1.0 - progress)).max(0.0001);
+                let mut current_alpha = (0.01 * (1.0 - progress)).max(0.0001);
+                if let Some(v) = current_hot.alpha_override {
+                    current_alpha = v;
+                }
                 let current_epsilon = (0.2 * (1.0 - (progress / 0.8))).max(0.01);
 
                 // GAME LOOP
@@ -711,10 +857,12 @@ fn run_evaluation_training(
                 // Log progress (chỉ thread 0)
                 if t_id == 0 && local_ep % 1000 == 0 {
                     print!(
-                        "\r   Eval: {:>6}/{} | Last: {:>5.0}   ",
+                        "\r   Eval: {:>6}/{} | Last: {:>5.0} | HotCfg: S{:.0} M{:.0}   ",
                         local_ep * num_threads,
                         total_games,
-                        local_env.game.score
+                        local_env.game.score,
+                        effective_config.w_snake,
+                        effective_config.w_merge
                     );
                     use std::io::Write;
                     std::io::stdout().flush().unwrap();
@@ -733,4 +881,3 @@ fn run_evaluation_training(
 
     (avg, max, brain)
 }
-
