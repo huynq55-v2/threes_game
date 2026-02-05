@@ -75,7 +75,7 @@ impl PBTManager {
             // 1. Đột biến Empty
             if rng.random_bool(0.3) {
                 new_config.w_empty *= rng.random_range(0.8..1.2);
-                new_config.w_empty = new_config.w_empty.clamp(1.0, 500.0);
+                new_config.w_empty = new_config.w_empty;
             }
 
             // 2. Đột biến Snake
@@ -85,7 +85,7 @@ impl PBTManager {
                 } else {
                     new_config.w_snake *= rng.random_range(0.8..1.2);
                 }
-                new_config.w_snake = new_config.w_snake.clamp(0.0, 1000.0);
+                new_config.w_snake = new_config.w_snake;
             }
 
             // 3. Đột biến Merge (MỚI)
@@ -95,7 +95,7 @@ impl PBTManager {
                 } else {
                     new_config.w_merge *= rng.random_range(0.8..1.2);
                 }
-                new_config.w_merge = new_config.w_merge.clamp(0.0, 200.0);
+                new_config.w_merge = new_config.w_merge;
             }
 
             // 4. Đột biến Disorder (MỚI)
@@ -105,7 +105,7 @@ impl PBTManager {
                 } else {
                     new_config.w_disorder *= rng.random_range(0.8..1.2);
                 }
-                new_config.w_disorder = new_config.w_disorder.clamp(0.0, 100.0);
+                new_config.w_disorder = new_config.w_disorder;
             }
 
             println!(
@@ -118,5 +118,16 @@ impl PBTManager {
         }
 
         (false, current_config)
+    }
+
+    // Thêm vào impl PBTManager
+    pub fn get_best_config_entry(&self) -> Option<(f32, TrainingConfig)> {
+        if self.population.is_empty() { return None; }
+        
+        let mut sorted_pop: Vec<_> = self.population.values().collect();
+        sorted_pop.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        
+        // Dùng HAI dấu sao (**) để lấy được giá trị thực tế
+        Some(**sorted_pop.first().unwrap())
     }
 }
