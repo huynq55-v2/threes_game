@@ -168,19 +168,19 @@ fn main() {
         );
 
         // if 1 of 4 params larger than 10000 then buff_multiplier = 1.0 / GOLDEN_RATIO
-        if brain.w_empty > 10000.0
-            || brain.w_snake > 10000.0
-            || brain.w_merge > 10000.0
-            || brain.w_disorder > 10000.0
+        if brain.w_empty > 100000.0
+            || brain.w_snake > 100000.0
+            || brain.w_merge > 100000.0
+            || brain.w_disorder > 100000.0
         {
             buff_multiplier = 1.0 / GOLDEN_RATIO;
         }
 
         // if 1 of 4 params smaller than 50 then buff_multiplier = GOLDEN_RATIO
-        if brain.w_empty < 50.0
-            || brain.w_snake < 50.0
-            || brain.w_merge < 50.0
-            || brain.w_disorder < 50.0
+        if brain.w_empty < 60.0
+            || brain.w_snake < 60.0
+            || brain.w_merge < 60.0
+            || brain.w_disorder < 60.0
         {
             buff_multiplier = GOLDEN_RATIO;
         }
@@ -485,4 +485,48 @@ fn run_training_parallel(
 
     // Trả về danh sách điểm
     local_scores
+}
+
+fn run_verification_parallel(
+    brain: &NTupleNetwork,  // Truyền tham chiếu (Read-only)
+    config: TrainingConfig, // Config muốn test
+    total_games: u32,       // Số lượng game (vd: 50,000)
+    num_threads: u32,
+) -> (f64, f64) {
+    // Trả về (Avg Score, Max Score)
+
+    // Chia việc cho các luồng
+    let scores: Vec<f64> = (0..total_games)
+        .into_par_iter() // Rayon parallel iterator
+        .map(|_| {
+            // Mỗi game tạo một môi trường mới sạch sẽ
+            let mut env = ThreesEnv::new(0.0); // Gamma không quan trọng khi test
+            env.set_config(config);
+
+            // Clone não để dùng (chỉ đọc weight, không ghi)
+            // Lưu ý: NTupleNetwork của bạn phải derive Clone
+            let mut local_brain = brain.clone();
+
+            env.reset();
+            let mut step_count = 0;
+
+            while !env.game.game_over && step_count < 20000 {
+                step_count += 1;
+
+                // CHƠI NGHIÊM TÚC: Expectimax (hoặc Greedy tùy bạn chọn)
+                // Tuyệt đối không có Random Move ở đây (trừ khi tiles ra ngẫu nhiên)
+                let action = env.get_best_action_expectimax(&mut local_brain);
+
+                // Chỉ đi nước bước, KHÔNG TRAIN
+                env.game.step(action);
+            }
+
+            env.game.score as f64
+        })
+        .collect();
+
+    let avg = scores.iter().sum::<f64>() / total_games as f64;
+    let max = scores.iter().fold(0.0f64, |a, &b| a.max(b));
+
+    (avg, max)
 }
