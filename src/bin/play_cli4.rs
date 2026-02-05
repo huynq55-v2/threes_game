@@ -22,6 +22,7 @@ struct SharedBrain {
 enum TrainingPolicy {
     Greedy,
     Expectimax,
+    Safe,
 }
 
 unsafe impl Send for SharedBrain {}
@@ -50,9 +51,13 @@ fn main() {
             println!("⚡ Training Mode: GREEDY");
             TrainingPolicy::Greedy
         }
-        _ => {
+        "expect" => {
             println!("🧠 Training Mode: EXPECTIMAX");
             TrainingPolicy::Expectimax
+        }
+        _ => {
+            println!("🧠 Training Mode: SAFE");
+            TrainingPolicy::Safe
         }
     };
 
@@ -88,18 +93,18 @@ fn main() {
     }
 
     // Safety checks
-    if brain.w_empty == 0.0 {
-        brain.w_empty = 50.0;
-    }
-    if brain.w_snake == 0.0 {
-        brain.w_snake = 50.0;
-    }
-    if brain.w_merge == 0.0 {
-        brain.w_merge = 50.0;
-    }
-    if brain.w_disorder == 0.0 {
-        brain.w_disorder = 50.0;
-    }
+    // if brain.w_empty == 0.0 {
+    //     brain.w_empty = 50.0;
+    // }
+    // if brain.w_snake == 0.0 {
+    //     brain.w_snake = 50.0;
+    // }
+    // if brain.w_merge == 0.0 {
+    //     brain.w_merge = 50.0;
+    // }
+    // if brain.w_disorder == 0.0 {
+    //     brain.w_disorder = 50.0;
+    // }
 
     // Config Watcher & PBT
     let hot_config = Arc::new(RwLock::new(HotLoadConfig::default()));
@@ -243,14 +248,15 @@ fn main() {
                 // Mỗi thread mutate ngẫu nhiên 1-2 weights
                 for _ in 0..2 {
                     let param_idx = rng.random_range(0..4);
-                    let mut mutate_factor = rng.random_range(1..6) as f64;
-                    mutate_factor *= buff_multiplier;
+                    let mutate_factor = rng.random_range(1..6) as f64;
+                    // tinh buff dua vao buff_multiplier
+                    let mutate = buff_multiplier.powf(mutate_factor);
 
                     match param_idx {
-                        0 => thread_config.w_empty *= mutate_factor,
-                        1 => thread_config.w_snake *= mutate_factor,
-                        2 => thread_config.w_merge *= mutate_factor,
-                        _ => thread_config.w_disorder *= mutate_factor,
+                        0 => thread_config.w_empty *= mutate,
+                        1 => thread_config.w_snake *= mutate,
+                        2 => thread_config.w_merge *= mutate,
+                        _ => thread_config.w_disorder *= mutate,
                     }
                 }
 
@@ -311,6 +317,9 @@ fn main() {
                                 }
                                 TrainingPolicy::Expectimax => {
                                     local_env.get_best_action_expectimax(&mut local_brain)
+                                }
+                                TrainingPolicy::Safe => {
+                                    local_env.get_best_action_safe(&mut local_brain)
                                 }
                             }
                         };
@@ -630,129 +639,6 @@ fn start_config_watcher(shared_hot_config: Arc<RwLock<HotLoadConfig>>) {
     });
 }
 
-fn run_training_parallel(
-    env: &mut ThreesEnv,
-    shared_brain: Arc<SharedBrain>,
-    pbt: Arc<Mutex<PBTManager>>,
-    hot_config: Arc<RwLock<HotLoadConfig>>,
-    episodes_to_run: u32,
-    total_target_episodes: u32,
-    start_offset: u32,
-    thread_id: u32,
-    num_threads: u32,
-    policy: TrainingPolicy,
-    buff_multiplier: f64,
-) -> Vec<f64> {
-    // <--- Thay đổi kiểu trả về
-    let mut rng = rand::rng();
-    let mut running_error = 0.0;
-    let mut running_score = 0.0;
-
-    // Vector lưu điểm số của thread này
-    let mut local_scores = Vec::with_capacity(episodes_to_run as usize);
-
-    // LẤY NÃO (UNSAFE)
-    let ptr = shared_brain.network;
-    let brain = unsafe { &mut *ptr };
-
-    // KHỞI TẠO CONFIG CHO THREAD NÀY
-    let mut pbt_config = {
-        TrainingConfig {
-            w_empty: brain.w_empty,
-            w_snake: brain.w_snake,
-            w_merge: brain.w_merge,
-            w_disorder: brain.w_disorder,
-        }
-    };
-
-    for local_ep in 0..episodes_to_run {
-        let current_global_ep = (local_ep * num_threads + thread_id) + start_offset;
-        let progress = current_global_ep as f64 / total_target_episodes as f64;
-
-        // HOT RELOAD
-        let current_hot = *hot_config.read().unwrap();
-        let mut effective_config = pbt_config;
-        if let Some(v) = current_hot.w_empty_override {
-            effective_config.w_empty = v;
-        }
-        if let Some(v) = current_hot.w_snake_override {
-            effective_config.w_snake = v;
-        }
-        if let Some(v) = current_hot.w_merge_override {
-            effective_config.w_merge = v;
-        }
-        if let Some(v) = current_hot.w_disorder_override {
-            effective_config.w_disorder = v;
-        }
-
-        env.set_config(effective_config);
-
-        // Cập nhật ngược lại pbt_config để báo cáo cuối thread chính xác
-        pbt_config = effective_config;
-        // ========================================================
-
-        // Alpha & Epsilon
-        let mut current_alpha = (0.01 * (1.0 - progress)).max(0.0001);
-        if let Some(v) = current_hot.alpha_override {
-            current_alpha = v;
-        }
-        let current_epsilon = (0.2 * (1.0 - (progress / 0.8))).max(0.01);
-
-        // GAME LOOP
-        env.reset();
-        let mut step_count = 0;
-        while !env.game.game_over {
-            step_count += 1;
-            if step_count > 20000 {
-                break;
-            }
-
-            let action = if rng.random_bool(current_epsilon.into()) {
-                env.get_random_valid_action()
-            } else {
-                match policy {
-                    TrainingPolicy::Greedy => env.get_best_action_greedy(brain),
-                    TrainingPolicy::Expectimax => env.get_best_action_expectimax(brain),
-                }
-            };
-
-            let (error, _) = env.train_step(brain, action, current_alpha);
-            running_error = running_error * 0.999 + error * 0.001;
-        }
-
-        let final_score = env.game.score as f64;
-        running_score = running_score * 0.99 + final_score * 0.01;
-
-        // Push điểm vào list
-        local_scores.push(final_score);
-
-        // PBT EVOLVE
-        if local_ep > 0 && local_ep % 1000 == 0 {
-            let mut pbt_guard = pbt.lock().unwrap();
-            let (evolved, new_cfg) =
-                pbt_guard.report_and_evolve(thread_id, running_score, pbt_config, buff_multiplier);
-            if evolved {
-                pbt_config = new_cfg;
-            }
-        }
-
-        if thread_id == 0 && local_ep % 1000 == 0 {
-            print!(
-                "\r   Run: {:>6} | Sc(EMA): {:>5.0} | Cfg: S{:.0} M{:.0}   ",
-                local_ep, running_score, effective_config.w_snake, effective_config.w_merge
-            );
-            use std::io::Write;
-            std::io::stdout().flush().unwrap();
-        }
-    }
-    if thread_id == 0 {
-        println!();
-    }
-
-    // Trả về danh sách điểm
-    local_scores
-}
-
 /// Hàm Evaluation Training: TRAIN THẬT với config cố định
 /// Khác với run_training_parallel:
 /// - Không dùng PBT evolve (config cố định)
@@ -845,6 +731,7 @@ fn run_evaluation_training(
                             TrainingPolicy::Expectimax => {
                                 local_env.get_best_action_expectimax(local_brain)
                             }
+                            TrainingPolicy::Safe => local_env.get_best_action_safe(local_brain),
                         }
                     };
 

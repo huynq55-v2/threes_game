@@ -189,6 +189,51 @@ impl ThreesEnv {
         action as u32
     }
 
+    pub fn get_best_action_safe(&self, brain: &NTupleNetwork) -> u32 {
+        let mut best_action = 0;
+        let mut max_of_min_quality = f64::NEG_INFINITY; // Dùng âm vô cùng cho chuẩn
+
+        let current_board_score = self.game.score;
+        let gamma = self.gamma;
+
+        for action_idx in 0..4 {
+            let dir = match action_idx {
+                0 => Direction::Up,
+                1 => Direction::Down,
+                2 => Direction::Left,
+                3 => Direction::Right,
+                _ => continue,
+            };
+
+            let outcomes = self.game.get_all_possible_outcomes(dir);
+
+            if !outcomes.is_empty() {
+                let mut min_quality = f64::INFINITY;
+
+                for outcome in &outcomes {
+                    let score_gain = (outcome.score - current_board_score) as f64;
+
+                    // CHỈ DÙNG PREDICT, bỏ Potential nếu bác đang chơi "Vô Ngã"
+                    let future_value = brain.predict_game(outcome);
+                    let move_quality = score_gain + gamma * future_value;
+
+                    if move_quality < min_quality {
+                        min_quality = move_quality;
+                    }
+                }
+
+                if min_quality > max_of_min_quality {
+                    max_of_min_quality = min_quality;
+                    best_action = action_idx;
+                }
+            }
+        }
+
+        // Nếu không tìm được nước đi nào (kẹt cứng), trả về một hành động mặc định
+        // hoặc xử lý logic Game Over ở bên ngoài
+        best_action as u32
+    }
+
     pub fn get_best_action_expectimax(&self, brain: &NTupleNetwork) -> u32 {
         let mut best_val = -f64::MAX;
         let mut best_action = 0;
@@ -212,7 +257,8 @@ impl ThreesEnv {
                     let outcome_score = outcome.score;
                     let score_gain = (outcome_score - current_board_score) as f64;
                     let gamma = self.gamma;
-                    let future_value = brain.predict_game(outcome) + get_composite_potential(&outcome.board, &self.config);
+                    let future_value = brain.predict_game(outcome)
+                        + get_composite_potential(&outcome.board, &self.config);
                     let move_quality = score_gain + gamma * future_value;
 
                     expected_value += move_quality;
