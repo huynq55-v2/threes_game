@@ -313,22 +313,48 @@ fn main() {
             }
         }
 
-        // Merge weights bằng Weighted Average (theo điểm)
-        let total_weight: f64 = thread_results.iter().map(|(s, _, _)| s).sum();
+        // Merge weights bằng Softmax Weighted Averaging (Chuyên nghiệp hơn Linear)
+        // Weight_i = exp(Score_i / T) / Sum(exp(Score_j / T))
+        // T (Temperature) cao -> Merge đều. T thấp -> Chọn lọc người giỏi nhất.
+        let max_score = thread_results.iter().map(|(s, _, _)| *s).fold(0.0, f64::max);
+        let temperature = max_score * 0.1; // T = 10% của max score
+        
+        // Tính mẫu số (denominator) ổn định số học (trừ max_score để tránh overflow exp)
+        let mut sum_exp = 0.0;
+        let mut softmax_weights = Vec::new();
+        
+        for (score, _, _) in &thread_results {
+            let val = ((score - max_score) / temperature).exp();
+            sum_exp += val;
+            softmax_weights.push(val);
+        }
+        
+        // Normalize weights
+        for w in &mut softmax_weights {
+            *w /= sum_exp;
+        }
+
+        println!("   -> Softmax Merge Weights: {:?}", 
+            softmax_weights.iter().map(|w| (w * 100.0).round() as i32).collect::<Vec<_>>()
+        );
         
         // Reset brain weights về 0 trước khi merge
-        for tuple in brain.tuples.iter_mut() {
-            for w in tuple.weights.iter_mut() {
-                *w = 0.0;
+        // Lưu ý: weights nằm ở cấp Network, không phải trong TupleConfig
+        for w_table in brain.weights.iter_mut() {
+            for val in w_table.iter_mut() {
+                *val = 0.0;
             }
         }
 
-        // Weighted average merge
-        for (score, trained_brain, _) in thread_results.iter() {
-            let weight = score / total_weight;
-            for (i, tuple) in trained_brain.tuples.iter().enumerate() {
-                for (j, w) in tuple.weights.iter().enumerate() {
-                    brain.tuples[i].weights[j] += w * weight;
+        // Softmax Weighted Merge
+        for (idx, (_, trained_brain, _)) in thread_results.iter().enumerate() {
+            let weight = softmax_weights[idx];
+            
+            // Duyệt qua từng bảng weights (Master Weights)
+            for (table_idx, w_table) in trained_brain.weights.iter().enumerate() {
+                // Cộng dồn vào bảng tương ứng của brain chính
+                for (w_idx, val) in w_table.iter().enumerate() {
+                    brain.weights[table_idx][w_idx] += val * weight;
                 }
             }
         }
@@ -362,13 +388,19 @@ fn main() {
         // Clone model ổn định để train evaluation
         let mut eval_brain = best_stable_brain.clone();
         
-        // Gán config mới vào eval_brain
+        // Best config đã in ở trên
+
+        // Clone MERGED BRAIN để train evaluation
+        // Đây là điểm quan trọng: Tận dụng kiến thức đã học và merge từ 100k games trước
+        let mut eval_brain = brain.clone();
+        
+        // Gán config tối ưu vào eval_brain
         eval_brain.w_empty = best_config.w_empty;
         eval_brain.w_snake = best_config.w_snake;
         eval_brain.w_merge = best_config.w_merge;
         eval_brain.w_disorder = best_config.w_disorder;
 
-        // Train thật 50k games với config mới
+        // Train thật 50k games với config mới trên nền merged brain
         let (eval_avg, eval_max, trained_eval_brain) = run_evaluation_training(
             eval_brain,
             best_config,
@@ -376,7 +408,7 @@ fn main() {
             num_threads,
             gamma,
             total_target_episodes,
-            best_stable_brain.total_episodes,
+            best_stable_brain.total_episodes + chunk_episodes, // Offset đã tăng lên
             training_policy,
         );
 
@@ -400,9 +432,9 @@ fn main() {
             best_eval_avg = eval_avg;
 
             // Cập nhật thông số vào Brain đã train để lưu
-            // Chỉ tính eval_games vì 100k train noisy chỉ dùng để tìm config
+            // TÍNH TOÀN BỘ: 100k học bẩn + 50k học thật đều được ghi nhận
             let mut save_brain = trained_eval_brain;
-            save_brain.total_episodes = best_stable_brain.total_episodes + eval_games;
+            save_brain.total_episodes = best_stable_brain.total_episodes + chunk_episodes + eval_games;
             save_brain.best_overall_avg = eval_avg;
 
             // Config đã được gán trước khi train nên không cần gán lại
