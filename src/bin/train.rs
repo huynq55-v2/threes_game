@@ -309,6 +309,7 @@ fn main() {
                     let current_epsilon = (0.2 * (1.0 - (progress / 0.8))).max(0.01);
 
                     local_env.reset();
+                    local_brain.reset_traces();
                     let mut step_count = 0;
                     while !local_env.game.game_over {
                         step_count += 1;
@@ -741,6 +742,7 @@ fn run_evaluation_training(
 
                 // GAME LOOP
                 local_env.reset();
+                local_brain.reset_traces();
 
                 // TRACKING FOR REPLAY
                 let mut current_steps = Vec::new();

@@ -230,10 +230,11 @@ impl ThreesEnv {
         // Công thức TD: Error = (Reward + Gamma * V(S')) - V(S)
         let td_error = final_reward + gamma * v_s_next - v_s;
 
-        // Chia nhỏ error cho số lượng Tuple để tránh over-correction
+        // Thay vì gọi update_weights cũ, gọi hàm TD(lambda)
         let num_tuples = brain.tuples.len() as f64;
-        let split_delta = (td_error * alpha) / num_tuples; // Dùng biến alpha tham số
-        brain.update_weights(&s_flat, split_delta);
+        let effective_alpha = alpha / num_tuples;
+
+        brain.update_weights_td_lambda(&s_flat, td_error, effective_alpha);
 
         (td_error.abs(), final_reward)
     }

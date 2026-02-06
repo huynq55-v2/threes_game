@@ -41,8 +41,25 @@ pub struct NTupleNetwork {
     pub best_overall_avg: f64,
     #[serde(default)]
     pub best_bot10_avg: f64,
+
+    // --- CÁC TRƯỜNG CHO TD(LAMBDA) ---
+    #[serde(default = "default_lambda")]
+    pub lambda: f64,
+
+    // Dùng skip để không lưu vào file save (giảm dung lượng)
+    #[serde(skip)]
+    pub traces: Vec<Vec<f64>>,
+
+    // Tối ưu: Chỉ lưu index của những ô có trace > 0
+    #[serde(skip)]
+    pub active_trace_indices: Vec<Vec<usize>>,
+
     #[serde(default = "default_phase")]
     pub phase: bool, // True = Tăng (Golden Ratio), False = Giảm (1/Golden Ratio)
+}
+
+fn default_lambda() -> f64 {
+    0.9
 }
 
 fn default_phase() -> bool {
@@ -66,10 +83,18 @@ impl NTupleNetwork {
             best_top1_avg: 0.0,
             best_overall_avg: 0.0,
             best_bot10_avg: 0.0,
+
+            // Default params
+            lambda: 0.9,
+            traces: Vec::new(),
+            active_trace_indices: Vec::new(),
             phase: true,
         };
 
         network.add_shared_snake();
+
+        // QUAN TRỌNG: Đồng bộ kích thước traces với weights ngay sau khi tạo xong tuples
+        network.init_traces();
 
         // network.init_weights();
         network
@@ -95,10 +120,95 @@ impl NTupleNetwork {
         let reader = BufReader::new(file);
         let mut deserializer = Deserializer::new(reader);
 
-        let network: NTupleNetwork = Deserialize::deserialize(&mut deserializer)
+        let mut network: NTupleNetwork = Deserialize::deserialize(&mut deserializer)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
+        // --- BƯỚC QUAN TRỌNG: NÂNG CẤP MODEL CŨ ---
+        // 1. Gán giá trị mặc định cho lambda (nếu file cũ không có, serde sẽ dùng default,
+        // nhưng ta set lại thủ công cho chắc chắn nếu muốn đổi giá trị khác)
+        if network.lambda == 0.0 {
+            network.lambda = 0.9;
+        }
+
+        // 2. Khởi tạo bộ nhớ cho Traces (vì file cũ không lưu cái này)
+        network.init_traces();
+
         Ok(network)
+    }
+
+    // Hàm helper để reset/init traces
+    pub fn init_traces(&mut self) {
+        self.traces.clear();
+        self.active_trace_indices.clear();
+        for w_table in &self.weights {
+            self.traces.push(vec![0.0; w_table.len()]);
+            self.active_trace_indices.push(Vec::with_capacity(1000));
+        }
+    }
+
+    // Gọi hàm này mỗi khi bắt đầu game mới (trong Env::reset)
+    pub fn reset_traces(&mut self) {
+        // Cách nhanh: Chỉ zero những thằng đang active
+        for (table_idx, indices) in self.active_trace_indices.iter_mut().enumerate() {
+            for &feat_idx in indices.iter() {
+                self.traces[table_idx][feat_idx] = 0.0;
+            }
+            indices.clear();
+        }
+    }
+
+    pub fn update_weights_td_lambda(&mut self, board: &[u32; 16], delta: f64, alpha: f64) {
+        // 1. Tính toán Code cho state hiện tại (Giống hàm predict)
+        let mut encoded_board = [0usize; 16];
+        for i in 0..16 {
+            encoded_board[i] = Self::encode_tile(board[i]);
+        }
+
+        let decay = self.gamma * self.lambda;
+        let threshold = 0.001; // Ngưỡng để cắt đuôi vết (optimization)
+
+        // 2. Bước Decay & Update các vết cũ (Sparse Loop)
+        // Duyệt qua tất cả các bảng weights
+        for table_idx in 0..self.weights.len() {
+            // Chỉ duyệt qua các index đang có vết > 0
+            // Dùng retain để vừa duyệt vừa xóa vết nhỏ
+            let traces_ref = &mut self.traces[table_idx];
+            let weights_ref = &mut self.weights[table_idx];
+
+            self.active_trace_indices[table_idx].retain(|&feat_idx| {
+                // Decay
+                traces_ref[feat_idx] *= decay;
+
+                // Update Weight: w = w + alpha * delta * e
+                weights_ref[feat_idx] += alpha * delta * traces_ref[feat_idx];
+
+                // Giữ lại nếu vết vẫn đủ lớn
+                traces_ref[feat_idx].abs() > threshold
+            });
+        }
+
+        // 3. Bước Cộng thêm vết cho trạng thái HIỆN TẠI (Replacing/Accumulating Traces)
+        // Với N-Tuple, ta dùng Accumulating Traces (Cộng dồn)
+        for tuple in &self.tuples {
+            let table_idx = tuple.weight_index;
+            let mut idx = 0;
+            for &pos in &tuple.indices {
+                idx = idx * 15 + encoded_board[pos];
+            }
+
+            // Cộng trace = 1.0 (hoặc += 1.0)
+            let old_trace = self.traces[table_idx][idx];
+            self.traces[table_idx][idx] += 1.0;
+
+            // Update weight ngay lập tức cho state hiện tại (vì trace vừa tăng)
+            // (Lưu ý: Ở bước 2 ta đã update cho trace CŨ rồi, giờ cộng thêm phần delta * 1.0 mới)
+            self.weights[table_idx][idx] += alpha * delta * 1.0;
+
+            // Nếu đây là vết mới (từ 0 lên 1), thêm vào danh sách active
+            if old_trace.abs() <= threshold {
+                self.active_trace_indices[table_idx].push(idx);
+            }
+        }
     }
 
     fn add_symmetries_shared(&mut self, base_tuple: Vec<usize>, weight_id: usize) {
