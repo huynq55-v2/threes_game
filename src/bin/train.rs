@@ -2,13 +2,11 @@ use rand::Rng;
 use rayon::prelude::*;
 use std::fs::{self, File}; // Thêm fs để quét thư mục
 use std::io::BufReader;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use std::{env, thread};
 use threes_rs::hotload_config::HotLoadConfig;
-use threes_rs::{
-    n_tuple_network::NTupleNetwork, pbt::PBTManager, pbt::TrainingConfig, threes_env::ThreesEnv,
-};
+use threes_rs::{n_tuple_network::NTupleNetwork, pbt::TrainingConfig, threes_env::ThreesEnv};
 
 // Hằng số Tỷ lệ vàng
 const GOLDEN_RATIO: f64 = 1.61803398875;
@@ -120,9 +118,9 @@ fn main() {
     let hot_config = Arc::new(RwLock::new(HotLoadConfig::default()));
     start_config_watcher(hot_config.clone());
     println!("🔥 Hot Reload ENABLED - Đang theo dõi config.json");
-    let pbt_manager = Arc::new(Mutex::new(PBTManager::new()));
+    // let pbt_manager = Arc::new(Mutex::new(PBTManager::new()));
 
-    let chunk_episodes = 80_000;
+    let chunk_episodes = 160_000;
     let total_target_episodes = 100_000_000;
 
     // --- CHECKPOINT GỐC (SINGLE SOURCE OF TRUTH) ---
@@ -146,7 +144,7 @@ fn main() {
     );
 
     // Số lượng game evaluation. 50k để đánh giá kỹ.
-    let eval_games = 80_000u32;
+    let eval_games = chunk_episodes / 10;
 
     loop {
         let loop_start = std::time::Instant::now();
@@ -157,15 +155,15 @@ fn main() {
         brain = best_stable_brain.clone();
 
         // Tạo pointer MỚI cho vòng lặp này (Quan trọng!)
-        let brain_ptr = SharedBrain {
-            network: &mut brain as *mut NTupleNetwork,
-        };
-        let shared_brain_loop = Arc::new(brain_ptr);
+        // let brain_ptr = SharedBrain {
+        //     network: &mut brain as *mut NTupleNetwork,
+        // };
+        // let shared_brain_loop = Arc::new(brain_ptr);
 
         // ------------------------------------------------------
         // 1. LOGIC BUFF (Random 1 chỉ số)
         // ------------------------------------------------------
-        let mut rng = rand::rng();
+        // let rng = rand::rng();
         // let buff_idx = rng.random_range(0..4);
 
         // match buff_idx {
@@ -472,7 +470,7 @@ fn main() {
         );
 
         // Clone model ổn định để train evaluation
-        let mut eval_brain = best_stable_brain.clone();
+        // let eval_brain = best_stable_brain.clone();
 
         // Best config đã in ở trên
 

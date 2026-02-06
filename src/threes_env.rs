@@ -57,7 +57,7 @@ impl ThreesEnv {
             }
         };
 
-        let phi_old = get_composite_potential(&self.game.board, &self.config);
+        // let phi_old = get_composite_potential(&self.game.board, &self.config);
         let score_old = self.game.score;
 
         if self.game.can_move(dir) {
@@ -65,16 +65,18 @@ impl ThreesEnv {
 
             let game_over = self.game.check_game_over();
 
-            let phi_new = get_composite_potential(&self.game.board, &self.config);
+            // let phi_new = get_composite_potential(&self.game.board, &self.config);
             let score_new = self.game.score;
 
             let base_reward = (score_new - score_old) as f64;
-            let gamma = self.gamma;
-            let raw_shaping = (gamma * phi_new) - phi_old;
+            // let gamma = self.gamma;
+            // let raw_shaping = (gamma * phi_new) - phi_old;
 
-            let final_reward = self
-                .adaptive_manager
-                .update_and_scale(base_reward, raw_shaping);
+            // let final_reward = self
+            //     .adaptive_manager
+            //     .update_and_scale(base_reward, raw_shaping);
+
+            let final_reward = base_reward; // no shaping
 
             (
                 self.get_board_flat().to_vec(),
@@ -85,21 +87,6 @@ impl ThreesEnv {
         } else {
             unreachable!()
         }
-    }
-
-    fn set_board(&mut self, flat_board: Vec<u32>, num_move: u32, next_value: u32) {
-        let mut new_board = [[crate::tile::Tile::new(0); 4]; 4];
-        for i in 0..16 {
-            let r = i / 4;
-            let c = i % 4;
-            new_board[r][c] = crate::tile::Tile::new(flat_board[i]);
-        }
-
-        self.game.board = new_board;
-        self.game.num_move = num_move;
-        self.game.future_value = next_value;
-        self.game.hints = self.game.predict_future();
-        self.game.calculate_score();
     }
 
     fn valid_moves(&self) -> Vec<bool> {
@@ -202,7 +189,7 @@ impl ThreesEnv {
 
         // B. Tính Phi(S) & Score cũ: Dùng cho Reward Shaping
         // Lưu ý: get_composite_potential là hàm heuristic "lẩu thập cẩm" bác tự viết
-        let phi_old = get_composite_potential(&self.game.board, &self.config);
+        // let phi_old = get_composite_potential(&self.game.board, &self.config);
         let score_old = self.game.score;
 
         // 2. Thực hiện hành động (Môi trường chuyển sang S')
@@ -211,7 +198,7 @@ impl ThreesEnv {
 
         // 3. Lấy dữ liệu SAU khi đi (tại trạng thái S')
         // ---------------------------------------------------
-        let phi_new = get_composite_potential(&self.game.board, &self.config);
+        // let phi_new = get_composite_potential(&self.game.board, &self.config);
         let score_new = self.game.score;
 
         // 4. Tính toán Adaptive Reward (Phần quan trọng nhất)
@@ -220,10 +207,12 @@ impl ThreesEnv {
         let base_reward = (score_new - score_old) as f64;
 
         let gamma = self.gamma;
-        let raw_shaping = (gamma * phi_new) - phi_old;
-        let final_reward = self
-            .adaptive_manager
-            .update_and_scale(base_reward, raw_shaping);
+        // let raw_shaping = (gamma * phi_new) - phi_old;
+        // let final_reward = self
+        //     .adaptive_manager
+        //     .update_and_scale(base_reward, raw_shaping);
+
+        let final_reward = base_reward; // no shaping
 
         // 5. Tính V(S') (TD Target)
         // ---------------------------------------------------

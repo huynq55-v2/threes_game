@@ -4,6 +4,6 @@
     "w_empty_override": 0.0,
     "w_merge_override": 0.0,
     "alpha": 0.00005,
-    "epsilon": 0.1,
+    "epsilon": 0.05,
     "eval_epsilon": 0.01
 }
