@@ -189,7 +189,7 @@ impl ThreesEnv {
 
         // B. Tính Phi(S) & Score cũ: Dùng cho Reward Shaping
         // Lưu ý: get_composite_potential là hàm heuristic "lẩu thập cẩm" bác tự viết
-        // let phi_old = get_composite_potential(&self.game.board, &self.config);
+        let phi_old = get_composite_potential(&self.game.board, &self.config);
         let score_old = self.game.score;
 
         // 2. Thực hiện hành động (Môi trường chuyển sang S')
@@ -198,7 +198,7 @@ impl ThreesEnv {
 
         // 3. Lấy dữ liệu SAU khi đi (tại trạng thái S')
         // ---------------------------------------------------
-        // let phi_new = get_composite_potential(&self.game.board, &self.config);
+        let phi_new = get_composite_potential(&self.game.board, &self.config);
         let score_new = self.game.score;
 
         // 4. Tính toán Adaptive Reward (Phần quan trọng nhất)
@@ -207,7 +207,7 @@ impl ThreesEnv {
         let base_reward = (score_new - score_old) as f64;
 
         let gamma = self.gamma;
-        // let raw_shaping = (gamma * phi_new) - phi_old;
+        let raw_shaping = (gamma * phi_new) - phi_old;
         // let final_reward = self
         //     .adaptive_manager
         //     .update_and_scale(base_reward, raw_shaping);
