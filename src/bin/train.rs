@@ -20,6 +20,7 @@ struct SharedBrain {
 enum TrainingPolicy {
     Expectimax,
     Safe,
+    Afterstate, // New policy
 }
 
 unsafe impl Send for SharedBrain {}
@@ -63,9 +64,13 @@ fn main() {
             println!("🧠 Training Mode: EXPECTIMAX");
             TrainingPolicy::Expectimax
         }
-        _ => {
+        "safe" => {
             println!("🧠 Training Mode: SAFE");
             TrainingPolicy::Safe
+        }
+        _ => {
+            println!("🧠 Training Mode: AFTERSTATE (Default/Optimized)");
+            TrainingPolicy::Afterstate
         }
     };
 
@@ -326,6 +331,9 @@ fn main() {
                                 }
                                 TrainingPolicy::Safe => {
                                     local_env.get_best_action_safe(&mut local_brain)
+                                }
+                                TrainingPolicy::Afterstate => {
+                                    local_env.get_best_action_afterstate(&mut local_brain)
                                 }
                             }
                         };
@@ -771,6 +779,9 @@ fn run_evaluation_training(
                                 local_env.get_best_action_expectimax(local_brain)
                             }
                             TrainingPolicy::Safe => local_env.get_best_action_safe(local_brain),
+                            TrainingPolicy::Afterstate => {
+                                local_env.get_best_action_afterstate(local_brain)
+                            }
                         }
                     };
 

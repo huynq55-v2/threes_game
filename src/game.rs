@@ -299,6 +299,31 @@ impl Game {
         (moved, merged_ranks)
     }
 
+    /// Hàm mới: Trả về bàn cờ SAU khi đi, nhưng TRƯỚC khi spawn số mới
+    pub fn get_afterstate(&self, dir: Direction) -> Option<[[Tile; 4]; 4]> {
+        if !self.can_move(dir) {
+            return None;
+        }
+
+        // Clone game ra nháp để không ảnh hưởng game thật
+        let mut temp_game = self.clone(); 
+        
+        // Thực hiện logic xoay và dồn gạch (giống move_dir)
+        let rot = temp_game.get_rotations_needed(dir);
+        temp_game.rotate_board(rot);
+        
+        let (moved, _, _) = temp_game.shift_board_left();
+        
+        // Xoay ngược lại
+        temp_game.rotate_board(4 - rot);
+
+        if moved {
+            Some(temp_game.board)
+        } else {
+            None
+        }
+    }
+
     pub fn get_all_possible_outcomes(&self, dir: Direction) -> Vec<Game> {
         if !self.can_move(dir) {
             return Vec::new();

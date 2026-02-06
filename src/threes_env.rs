@@ -1,16 +1,13 @@
-use crate::adaptive_manager::AdaptiveManager;
 use crate::game::{Direction, Game};
 use crate::n_tuple_network::NTupleNetwork;
 use crate::pbt::TrainingConfig;
 use crate::potential_calculate::get_composite_potential;
-use pyo3::prelude::*;
 use rand::Rng as _;
-use rayon::prelude::*;
 
 pub struct ThreesEnv {
     pub game: Game,
     gamma: f64,
-    adaptive_manager: AdaptiveManager,
+    // adaptive_manager: AdaptiveManager, // Unused
     pub config: TrainingConfig,
 }
 
@@ -20,7 +17,7 @@ impl ThreesEnv {
         ThreesEnv {
             game,
             gamma: gamma,
-            adaptive_manager: AdaptiveManager::new(),
+            // adaptive_manager: AdaptiveManager::new(),
             config: TrainingConfig::default(),
         }
     }
@@ -178,73 +175,125 @@ impl ThreesEnv {
         best_action
     }
 
+    pub fn get_best_action_afterstate(&self, brain: &NTupleNetwork) -> u32 {
+        let mut best_action = 0;
+        let mut best_val = f64::NEG_INFINITY;
+
+        for action in 0..4 {
+            let dir = match action {
+                0 => Direction::Up,
+                1 => Direction::Down,
+                2 => Direction::Left,
+                3 => Direction::Right,
+                _ => continue,
+            };
+
+            if let Some(after_board) = self.game.get_afterstate(dir) {
+                let mut flat = [0u32; 16];
+                for r in 0..4 {
+                    for c in 0..4 {
+                        flat[r * 4 + c] = after_board[r][c].value;
+                    }
+                }
+
+                let val = brain.predict(&flat);
+                if val > best_val {
+                    best_val = val;
+                    best_action = action;
+                }
+            }
+        }
+        best_action as u32
+    }
+
     pub fn train_step(&mut self, brain: &mut NTupleNetwork, action: u32, alpha: f64) -> (f64, f64) {
-        // 1. Lấy dữ liệu TRƯỚC khi đi (tại trạng thái S)
-        // ---------------------------------------------------
-        let s_flat_vec = self.get_board_flat();
-        let s_flat: [u32; 16] = s_flat_vec.try_into().unwrap_or([0u32; 16]);
-
-        // A. Tính V(S): Giá trị dự đoán của Mạng Neural (Cái cần update)
-        let v_s = brain.predict(&s_flat);
-
-        // B. Tính Phi(S) & Score cũ: Dùng cho Reward Shaping
-        // Lưu ý: get_composite_potential là hàm heuristic "lẩu thập cẩm" bác tự viết
-        let phi_old = get_composite_potential(&self.game.board, &self.config);
-        let score_old = self.game.score;
-
-        // 2. Thực hiện hành động (Môi trường chuyển sang S')
-        // ---------------------------------------------------
-        let (_, _, done, _) = self.step(action);
-
-        // 3. Lấy dữ liệu SAU khi đi (tại trạng thái S')
-        // ---------------------------------------------------
-        let phi_new = get_composite_potential(&self.game.board, &self.config);
-        let score_new = self.game.score;
-
-        // 4. Tính toán Adaptive Reward (Phần quan trọng nhất)
-        // ---------------------------------------------------
-
-        let base_reward = (score_new - score_old) as f64;
-
-        let gamma = self.gamma;
-        let raw_shaping = (gamma * phi_new) - phi_old;
-        // let final_reward = self
-        //     .adaptive_manager
-        //     .update_and_scale(base_reward, raw_shaping);
-
-        let final_reward = base_reward; // no shaping
-
-        // 5. Tính V(S') (TD Target)
-        // ---------------------------------------------------
-        let v_s_next = if done {
-            0.0
-        } else {
-            let s_next_vec = self.get_board_flat();
-            let s_next_flat: [u32; 16] = s_next_vec.try_into().unwrap_or([0u32; 16]);
-            brain.predict(&s_next_flat)
+        // 1. Tính trạng thái Afterstate (S_after)
+        let dir = match action {
+            0 => Direction::Up,
+            1 => Direction::Down,
+            2 => Direction::Left,
+            3 => Direction::Right,
+            _ => unreachable!(),
         };
 
-        // 6. Tính TD Error & Update Weights
-        // ---------------------------------------------------
+        // Lấy board sau khi di chuyển (chưa spawn)
+        let after_board_opt = self.game.get_afterstate(dir);
 
-        // Công thức TD: Error = (Reward + Gamma * V(S')) - V(S)
-        let td_error = final_reward + gamma * v_s_next - v_s;
+        // Nếu nước đi không hợp lệ (về lý thuyết không nên xảy ra nếu đã check valid)
+        if after_board_opt.is_none() {
+            return (0.0, -10.0); // Phạt nặng
+        }
+        let after_board = after_board_opt.unwrap();
 
-        // Thay vì gọi update_weights cũ, gọi hàm TD(lambda)
+        // Flatten để đưa vào mạng
+        let mut s_after_flat = [0u32; 16];
+        for r in 0..4 {
+            for c in 0..4 {
+                s_after_flat[r * 4 + c] = after_board[r][c].value;
+            }
+        }
+
+        // A. Tính V(S_after) - Đây là giá trị ta cần tối ưu
+        let v_after = brain.predict(&s_after_flat);
+
+        // Lưu điểm cũ để tính reward
+        let score_old = self.game.score;
+        let _phi_old = get_composite_potential(&self.game.board, &self.config); // Giữ lại để tránh unused warning nếu cần, hoặc xóa
+
+        // 2. Thực hiện hành động thật (Môi trường chuyển sang S')
+        // Lúc này quái mới sinh ra, tạo thành S'
+        let (_, _, done, _) = self.step(action);
+
+        let score_new = self.game.score;
+        let _phi_new = get_composite_potential(&self.game.board, &self.config);
+
+        let reward = (score_new - score_old) as f64;
+
+        // 3. Tính V(S'_after) cho bước tiếp theo (TD Target)
+        let v_next_after = if done {
+            0.0
+        } else {
+            // Tìm nước đi tốt nhất tiếp theo từ S' (Greedy policy cho Target)
+            // Lưu ý: Ở đây ta cần predict trên Afterstate của các nước đi tiếp theo
+            let best_action_idx = self.get_best_action_afterstate(brain); // Cần viết thêm hàm này
+
+            // Lấy giá trị Afterstate của nước đi tốt nhất đó
+            let best_dir = match best_action_idx {
+                0 => Direction::Up,
+                1 => Direction::Down,
+                2 => Direction::Left,
+                3 => Direction::Right,
+                _ => unreachable!(),
+            };
+            if let Some(next_after_board) = self.game.get_afterstate(best_dir) {
+                let mut next_flat = [0u32; 16];
+                for r in 0..4 {
+                    for c in 0..4 {
+                        next_flat[r * 4 + c] = next_after_board[r][c].value;
+                    }
+                }
+                brain.predict(&next_flat)
+            } else {
+                0.0
+            }
+        };
+
+        // 4. Tính TD Error & Update
+        // Target hướng về Afterstate của bước sau
+        let td_error = reward + self.gamma * v_next_after - v_after;
+
+        // Update weights dựa trên Afterstate hiện tại (s_after_flat)
         let num_tuples = brain.tuples.len() as f64;
         let effective_alpha = alpha / num_tuples;
 
-        brain.update_weights_td_lambda(&s_flat, td_error, effective_alpha);
+        // Update vào S_after, KHÔNG PHẢI S hiện tại
+        brain.update_weights_td_lambda(&s_after_flat, td_error, effective_alpha);
 
-        (td_error.abs(), final_reward)
+        (td_error.abs(), reward)
     }
 
     pub fn get_board_flat(&self) -> [u32; 16] {
         // Ủy quyền trực tiếp cho Game xử lý
         self.game.get_board_flat()
-    }
-
-    fn score(&self) -> f64 {
-        self.game.score
     }
 }
