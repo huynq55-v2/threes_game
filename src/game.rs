@@ -6,7 +6,6 @@ use rand::Rng;
 use rand::rng;
 use rand::seq::IndexedRandom;
 use rand::seq::SliceRandom;
-use crate::rarity::RarityEngine;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Direction {
     Up,
@@ -25,15 +24,6 @@ pub struct Game {
     pub special: PseudoList<u32>,
     pub future_value: u32,
     pub hints: Vec<u32>,
-    pub rarity: RarityEngine,
-}
-
-#[derive(Clone, Debug)]
-pub struct GameStats {
-    pub max_val: u32,
-    pub max_count: u32,
-    pub pre_max_count: u32,
-    pub hub_count: u32,
 }
 
 impl Game {
@@ -68,8 +58,6 @@ impl Game {
         let mut rng = rng();
         indices.shuffle(&mut rng);
 
-        let mut rarity = RarityEngine::new();
-
         // Take the first K_START_SPAWN_NUMBERS positions (usually 9)
         for &idx in indices.iter().take(K_START_SPAWN_NUMBERS as usize) {
             let row = idx / 4;
@@ -79,7 +67,6 @@ impl Game {
             if let Some(val) = numbers.get_next() {
                 let tile = Tile::new(val as u32);
                 board[row][col] = tile;
-                rarity.register_observation(tile.rank());
             }
         }
 
@@ -92,7 +79,6 @@ impl Game {
             special,
             future_value,
             hints,
-            rarity,
         };
 
         // calculate score
@@ -102,49 +88,6 @@ impl Game {
         game.hints = game.predict_future();
 
         game
-    }
-
-    pub fn new_with_rarity(rarity: RarityEngine) -> Self {
-        let mut game = Game::new();
-        game.rarity = rarity;
-        
-        // Re-register initial board with the new engine to ensure consistency? 
-        // Or assume the passed engine is already "warm" and we just continue?
-        // Actually, if we pass an existing engine, we probably want to KEEP its global stats, 
-        // AND register the *new* initial board of this game instance.
-        // Game::new() already registered its initial board to its own fresh engine.
-        // If we overwrite `game.rarity`, we lose those registrations.
-        // So we should register the current board to the *passed* engine.
-        
-        for r in 0..4 {
-            for c in 0..4 {
-                let t = game.board[r][c];
-                if !t.is_empty() {
-                    game.rarity.register_observation(t.rank());
-                }
-            }
-        }
-        
-        game
-    }
-
-    // Hàm phụ trợ (như cũ)
-    fn calculate_diff(a: u32, b: u32) -> f64 {
-        if (a == 1 && b == 2) || (a == 2 && b == 1) { return 0.0; } // Cặp đôi hoàn hảo
-        if (a == 1 && b == 1) || (a == 2 && b == 2) { return 1.0; } // Kẹt xe
-        
-        let mut ra = get_rank_from_value(a);
-        let mut rb = get_rank_from_value(b);
-        if ra == 21 || ra == 22 {
-            ra = 0;
-        }
-        if rb == 21 || rb == 22 {
-            rb = 0;
-        }
-
-        // Dùng logarit của chênh lệch để phạt nặng sự chênh lệch lớn
-        // Ví dụ: Rank 8 đứng cạnh Rank 1 -> Diff = 7 -> Phạt 7
-        (ra as f64 - rb as f64).abs()
     }
 
     pub fn get_highest_rank(&self) -> u8 {
@@ -188,54 +131,6 @@ impl Game {
             }
         }
         count
-    }
-
-    pub fn get_game_stats(&self) -> GameStats {
-        let mut rank_counts = [0u32; 16];
-        let mut max_rank = 0;
-        let mut max_val = 0;
-
-        // 1. Single pass to count ranks and find max
-        for r in 0..4 {
-            for c in 0..4 {
-                let val = self.board[r][c].value;
-                if val > 0 {
-                    let rank = get_rank_from_value(val);
-                    if (rank as usize) < 16 {
-                        rank_counts[rank as usize] += 1;
-                    }
-                    if val > max_val {
-                        max_val = val;
-                        max_rank = rank;
-                    }
-                }
-            }
-        }
-
-        let max_count = if max_val > 0 { rank_counts[max_rank as usize] } else { 0 };
-
-        // 2. Pre-Max
-        // Pre-Max logic: If Max > 3, Pre-Max = Max / 2.
-        let pre_max_val = if max_val > 3 { max_val / 2 } else { 0 };
-        let pre_max_count = if pre_max_val > 0 {
-             let r = get_rank_from_value(pre_max_val);
-             rank_counts[r as usize]
-        } else { 0 };
-
-        // 3. Hub
-        // Hub logic: If Max >= 24, Hub = Max / 8.
-        let hub_val = if max_val >= 24 { max_val / 8 } else { 0 };
-        let hub_count = if hub_val > 0 {
-            let r = get_rank_from_value(hub_val);
-            rank_counts[r as usize]
-        } else { 0 };
-
-        GameStats {
-            max_val,
-            max_count,
-            pre_max_count,
-            hub_count,
-        }
     }
 
     pub fn calculate_score(&mut self) {
@@ -498,7 +393,6 @@ impl Game {
             // Tính Rank trả về nếu là Merge
             let merged_rank = if is_merge {
                 let r = get_rank_from_value(new_val);
-                self.rarity.register_observation(r);
                 Some(r)
             } else {
                 None
@@ -531,7 +425,6 @@ impl Game {
     pub fn spawn_at(&mut self, row: usize, col: usize, val: u32) {
         let t = Tile::new(val);
         self.board[row][col] = t;
-        self.rarity.register_observation(t.rank());
     }
 
     // Hàm wrapper cũ (đã được làm sạch)
@@ -661,7 +554,6 @@ impl Game {
             special,
             future_value,
             hints,
-            rarity: RarityEngine::new(),
         };
 
         game.future_value = game.get_next_value();
@@ -825,13 +717,6 @@ mod tests {
         game.board[0][0].value = 99; // Chỉ đặt 1 ô ở góc trên trái
 
         let syms = game.get_symmetries();
-        
-        // Ô 99 phải xuất hiện ở 4 góc khác nhau qua các phép xoay
-        let mut corner_hits = 0;
-        if syms[0][0][0].value == 99 { corner_hits += 1; } // Gốc
-        if syms[0][0][3].value == 99 { corner_hits += 1; } // Xoay/Lật
-        if syms[0][3][0].value == 99 { corner_hits += 1; }
-        if syms[0][3][3].value == 99 { corner_hits += 1; }
 
         // Trong 8 biến thể của 1 ô góc, nó phải nằm ở các vị trí góc
         for s in syms {
@@ -839,173 +724,5 @@ mod tests {
                                  s[3][0].value == 99 || s[3][3].value == 99;
             assert!(val_at_corners, "A corner tile must remain in a corner after symmetry");
         }
-    }
-
-    #[test]
-    fn test_rarity_integration() {
-        let rarity_engine = RarityEngine::new();
-        let mut game = Game::new_with_rarity(rarity_engine);
-        
-        // 1. Initial board should be registered
-        // Game has K_START_SPAWN_NUMBERS tiles (9)
-        assert!(game.rarity.total_seen >= 9);
-        let initial_seen = game.rarity.total_seen;
-        
-        // 2. Force a merge
-        // Setup a simple board: 1 2 0 0 -> Left move -> 3
-        let t1 = Tile::new(1);
-        let t2 = Tile::new(2);
-        game.board = [[Tile::new(0); 4]; 4];
-        game.board[0][0] = t1;
-        game.board[0][1] = t2;
-        
-        // Reset stats to ensure we track new changes neatly, 
-        // OR just check if it increases.
-        // Let's create a NEW game with this board to be cleaner, 
-        // but easier just to modify board and move.
-        
-        let (moved, merged) = game.move_dir(Direction::Left);
-        assert!(moved);
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0], 1); // Rank of 3 is 1
-        
-        // logic:
-        // move_dir -> shift_board_left -> process_single_row 
-        // -> if merge -> rarity.register_observation(new_rank)
-        // AND -> if moved -> do_spawn_on_row_ends -> spawn_at -> rarity.register_observation(new_tile)
-        
-        // So total_seen should increase by:
-        // 1 (merged tile 3)
-        // + 1 (spawned tile)
-        
-        assert_eq!(game.rarity.total_seen, initial_seen + 2);
-    }
-
-    #[test]
-    fn calculate_optimal_base_reward_simulation() {
-        use crate::game::Game;
-        use rand::rng;
-        use std::collections::HashMap;
-
-        println!("\n=== 🚀 BẮT ĐẦU MÔ PHỎNG ĐỂ TÌM BASE REWARD TỐI ƯU ===");
-        
-        // 1. Setup
-        // Dùng 1 RarityEngine duy nhất xuyên suốt 5000 ván để giả lập quá trình học lâu dài
-        let mut global_rarity = crate::rarity::RarityEngine::new(); 
-        
-        // Lưu trữ Dynamic Reward của từng Rank để tính thống kê
-        // Key: Rank -> Value: List các giá trị dynamic nhận được
-        let mut rank_stats: HashMap<u8, Vec<f64>> = HashMap::new();
-
-        let total_games = 50000;
-        let mut total_merges = 0;
-
-        for game_idx in 0..total_games {
-            // New game kế thừa RarityEngine cũ (để global_counts tăng dần)
-            let mut game = Game::new_with_rarity(global_rarity.clone());
-            let mut rng = rng();
-
-            loop {
-                let valid_moves = game.get_valid_moves();
-                if valid_moves.is_empty() {
-                    break;
-                }
-                
-                // Random move
-                let dir = *valid_moves.choose(&mut rng).unwrap();
-                let (moved, merged_ranks) = game.move_dir(dir);
-
-                if moved {
-                    // Nếu có merge, ta tính thử xem Dynamic Reward lúc này là bao nhiêu
-                    if !merged_ranks.is_empty() {
-                        // Lấy snapshot board hiện tại để tính Local Factor
-                        let mut local_board_ranks = [0u8; 16];
-                        for r in 0..4 {
-                            for c in 0..4 {
-                                local_board_ranks[r * 4 + c] = game.board[r][c].rank();
-                            }
-                        }
-
-                        for rank in merged_ranks {
-                            // --- CÔNG THỨC DYNAMIC (TÁI HIỆN) ---
-                            // Copy logic từ RarityEngine nhưng BỎ số 1.0 ở cuối
-                            let local_count = local_board_ranks.iter().filter(|&&r| r == rank).count() as f64;
-                            
-                            // Lưu ý: total_seen và global_counts lấy từ game.rarity (đã được update bên trong move_dir)
-                            let global_factor = (game.rarity.total_seen as f64 + 1.0) 
-                                              / (game.rarity.global_counts[rank as usize] as f64 + 1.0);
-                            
-                            let local_factor = 16.0 / (local_count + 1.0);
-                            
-                            // Dynamic thuần túy
-                            let raw_dynamic = global_factor.ln() * local_factor;
-                            
-                            rank_stats.entry(rank).or_insert(Vec::new()).push(raw_dynamic);
-                            total_merges += 1;
-                        }
-                    }
-                }
-            }
-            
-            // Cập nhật lại global_rarity từ game vừa chơi xong để ván sau thông minh hơn
-            global_rarity = game.rarity;
-            
-            if game_idx % 1000 == 0 {
-                println!("... Đã chạy xong {} ván ...", game_idx);
-            }
-        }
-
-        println!("\n=== 📊 KẾT QUẢ PHÂN TÍCH ({:?} Merges) ===", total_merges);
-        println!("{:<10} | {:<15} | {:<15} | {:<15}", "RANK", "MEDIAN DYNAMIC", "MEAN DYNAMIC", "MAX DYNAMIC");
-        println!("{}", "-".repeat(65));
-
-        let mut ranks: Vec<&u8> = rank_stats.keys().collect();
-        ranks.sort();
-
-        // Biến lưu giá trị tham chiếu cho Rank 1
-        let mut rank_1_median = 0.0;
-
-        for rank in ranks {
-            let mut vals = rank_stats[rank].clone();
-            if vals.is_empty() { continue; }
-            
-            // Tính Median
-            vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let mid = vals.len() / 2;
-            let median = vals[mid];
-            
-            // Tính Mean
-            let sum: f64 = vals.iter().sum();
-            let mean = sum / vals.len() as f64;
-            
-            let max_val = vals.last().unwrap();
-            
-            let tile_label = match rank {
-                1 => "Rank 1 (3)",
-                2 => "Rank 2 (6)",
-                5 => "Rank 5 (48)",
-                8 => "Rank 8 (384)",
-                _ => "Other",
-            };
-            
-            if *rank == 1 || *rank == 2 || *rank == 5 || *rank == 8 {
-                 println!("{:<10} | {:<15.4} | {:<15.4} | {:<15.4} <--- {}", rank, median, mean, max_val, tile_label);
-            }
-            
-            if *rank == 1 {
-                rank_1_median = median;
-            }
-        }
-
-        println!("\n=== 💡 KẾT LUẬN & GỢI Ý ===");
-        println!("Giá trị nội tại (Dynamic) trung bình của một cú gộp RÁC (Rank 1) là: {:.4}", rank_1_median);
-        println!("Để Base Reward có ý nghĩa cân bằng (không quá lớn, không quá nhỏ):");
-        println!("👉 Base Reward nên nằm trong khoảng [{:.2} - {:.2}]", rank_1_median * 0.5, rank_1_median * 2.0);
-        
-        println!("\nKiểm tra lại hệ số Scale hiện tại:");
-        println!("Nếu Base = 1.0 và Rank 1 Dynamic = {:.4}", rank_1_median);
-        println!("=> Tổng Reward gộp rác = {:.4}", 1.0 + rank_1_median);
-        println!("=> Tỷ lệ đóng góp của Base: {:.1}% (Nếu > 80% là AI lười, chỉ thích gộp rác lấy Base)", 
-                 (1.0 / (1.0 + rank_1_median)) * 100.0);
     }
 }

@@ -9,4 +9,5 @@ pub struct HotLoadConfig {
     pub w_snake_override: Option<f64>,
     pub w_merge_override: Option<f64>,
     pub alpha_override: Option<f64>,
+    pub eval_epsilon: Option<f64>,
 }

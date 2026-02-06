@@ -7,7 +7,7 @@ use std::time::Duration;
 use std::{env, thread};
 use threes_rs::hotload_config::HotLoadConfig;
 use threes_rs::{
-    n_tuple_network::NTupleNetwork, pbt::PBTManager, pbt::TrainingConfig, python_module::ThreesEnv,
+    n_tuple_network::NTupleNetwork, pbt::PBTManager, pbt::TrainingConfig, threes_env::ThreesEnv,
 };
 
 // Hằng số Tỷ lệ vàng
@@ -20,7 +20,6 @@ struct SharedBrain {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TrainingPolicy {
-    Greedy,
     Expectimax,
     Safe,
 }
@@ -47,10 +46,6 @@ fn main() {
     };
 
     let training_policy = match policy_arg.as_str() {
-        "greedy" => {
-            println!("⚡ Training Mode: GREEDY");
-            TrainingPolicy::Greedy
-        }
         "expect" => {
             println!("🧠 Training Mode: EXPECTIMAX");
             TrainingPolicy::Expectimax
@@ -312,9 +307,6 @@ fn main() {
                             local_env.get_random_valid_action()
                         } else {
                             match training_policy {
-                                TrainingPolicy::Greedy => {
-                                    local_env.get_best_action_greedy(&mut local_brain)
-                                }
                                 TrainingPolicy::Expectimax => {
                                     local_env.get_best_action_expectimax(&mut local_brain)
                                 }
@@ -712,7 +704,10 @@ fn run_evaluation_training(
                 if let Some(v) = current_hot.alpha_override {
                     current_alpha = v;
                 }
-                let current_epsilon = (0.2 * (1.0 - (progress / 0.8))).max(0.01);
+                // 🔥 Dùng eval_epsilon từ config nếu có, không thì dùng epsilon decay
+                let current_epsilon = current_hot
+                    .eval_epsilon
+                    .unwrap_or_else(|| (0.2 * (1.0 - (progress / 0.8))).max(0.01));
 
                 // GAME LOOP
                 local_env.reset();
@@ -727,7 +722,6 @@ fn run_evaluation_training(
                         local_env.get_random_valid_action()
                     } else {
                         match policy {
-                            TrainingPolicy::Greedy => local_env.get_best_action_greedy(local_brain),
                             TrainingPolicy::Expectimax => {
                                 local_env.get_best_action_expectimax(local_brain)
                             }
@@ -765,6 +759,17 @@ fn run_evaluation_training(
     let all_scores: Vec<f64> = results.into_iter().flatten().collect();
     let avg = all_scores.iter().sum::<f64>() / all_scores.len() as f64;
     let max = all_scores.iter().fold(0.0f64, |a, &b| a.max(b));
+
+    // Tính điểm trung bình của 10% thấp nhất (Bottom 10%)
+    let mut sorted_scores = all_scores.clone();
+    sorted_scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let bot10_count = (sorted_scores.len() as f64 * 0.1).ceil() as usize;
+    let bot10_avg: f64 = sorted_scores.iter().take(bot10_count).sum::<f64>() / bot10_count as f64;
+
+    println!(
+        "   📉 Bottom 10% Avg: {:.2} ({} games)",
+        bot10_avg, bot10_count
+    );
 
     (avg, max, brain)
 }

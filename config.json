@@ -3,6 +3,7 @@
     "w_disorder_override": 0.0,
     "w_empty_override": 0.0,
     "w_merge_override": 0.0,
-    "alpha": 0.0002,
-    "epsilon": 0.1
+    "alpha": 0.00005,
+    "epsilon": 0.1,
+    "eval_epsilon": 0.01
 }

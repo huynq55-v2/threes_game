@@ -18,5 +18,10 @@ rayon = "1.11.0"
 rmp-serde = "1.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.149"
+macroquad = "0.4"
+
+[[bin]]
+name = "play_game"
+path = "src/bin/play_game.rs"
 
 [dev-dependencies]

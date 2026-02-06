@@ -7,14 +7,6 @@ pub mod n_tuple_network;
 pub mod pbt;
 pub mod potential_calculate;
 pub mod pseudo_list;
-pub mod python_module;
-pub mod rarity;
 pub mod threes_const;
+pub mod threes_env;
 pub mod tile;
-pub mod ui;
-
-#[pymodule]
-fn threes_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<python_module::ThreesVecEnv>()?;
-    Ok(())
-}
