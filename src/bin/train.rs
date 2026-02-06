@@ -125,7 +125,7 @@ fn main() {
     println!("🔥 Hot Reload ENABLED - Đang theo dõi config.json");
     // let pbt_manager = Arc::new(Mutex::new(PBTManager::new()));
 
-    let chunk_episodes = 160_000;
+    let chunk_episodes = 80_000;
     let total_target_episodes = 100_000_000;
 
     // --- CHECKPOINT GỐC (SINGLE SOURCE OF TRUTH) ---
@@ -314,7 +314,7 @@ fn main() {
                     let current_epsilon = (0.2 * (1.0 - (progress / 0.8))).max(0.01);
 
                     local_env.reset();
-                    local_brain.reset_traces();
+                    // local_brain.reset_traces(); // Removed: Traces now managed by env
                     let mut step_count = 0;
                     while !local_env.game.game_over {
                         step_count += 1;
@@ -750,7 +750,7 @@ fn run_evaluation_training(
 
                 // GAME LOOP
                 local_env.reset();
-                local_brain.reset_traces();
+                // local_brain.reset_traces(); // Removed: Traces now managed by env
 
                 // TRACKING FOR REPLAY
                 let mut current_steps = Vec::new();

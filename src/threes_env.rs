@@ -9,6 +9,10 @@ pub struct ThreesEnv {
     gamma: f64,
     // adaptive_manager: AdaptiveManager, // Unused
     pub config: TrainingConfig,
+
+    // THÊM 2 trường này vào Env (Local State)
+    pub traces: Vec<Vec<f64>>,
+    pub active_trace_indices: Vec<Vec<usize>>,
 }
 
 impl ThreesEnv {
@@ -19,6 +23,31 @@ impl ThreesEnv {
             gamma: gamma,
             // adaptive_manager: AdaptiveManager::new(),
             config: TrainingConfig::default(),
+
+            // Khởi tạo rỗng
+            traces: Vec::new(),
+            active_trace_indices: Vec::new(),
+        }
+    }
+
+    // Hàm mới để khởi tạo/reset traces
+    pub fn reset_traces(&mut self, num_tables: usize, table_sizes: &[usize]) {
+        // Nếu chưa khởi tạo hoặc kích thước sai -> Cấp phát lại
+        if self.traces.len() != num_tables {
+            self.traces.clear();
+            self.active_trace_indices.clear();
+            for &size in table_sizes {
+                self.traces.push(vec![0.0; size]);
+                self.active_trace_indices.push(Vec::with_capacity(1000));
+            }
+        } else {
+            // Nếu đã có, chỉ cần clear giá trị active
+            for (table_idx, indices) in self.active_trace_indices.iter_mut().enumerate() {
+                for &feat_idx in indices.iter() {
+                    self.traces[table_idx][feat_idx] = 0.0;
+                }
+                indices.clear();
+            }
         }
     }
 
@@ -28,13 +57,6 @@ impl ThreesEnv {
 
     pub fn set_gamma(&mut self, gamma: f64) {
         self.gamma = gamma;
-    }
-
-    // reset return board and hints
-    pub fn reset(&mut self) -> (Vec<u32>, Vec<u32>) {
-        self.game = Game::new();
-
-        (self.get_board_flat().to_vec(), self.game.hints.clone())
     }
 
     // Return signature: (Board, Reward, Done, Hints)
@@ -238,14 +260,14 @@ impl ThreesEnv {
 
         // Lưu điểm cũ để tính reward
         let score_old = self.game.score;
-        let _phi_old = get_composite_potential(&self.game.board, &self.config); // Giữ lại để tránh unused warning nếu cần, hoặc xóa
+        // let _phi_old = get_composite_potential(&self.game.board, &self.config); // Giữ lại để tránh unused warning nếu cần, hoặc xóa
 
         // 2. Thực hiện hành động thật (Môi trường chuyển sang S')
         // Lúc này quái mới sinh ra, tạo thành S'
         let (_, _, done, _) = self.step(action);
 
         let score_new = self.game.score;
-        let _phi_new = get_composite_potential(&self.game.board, &self.config);
+        // let _phi_new = get_composite_potential(&self.game.board, &self.config);
 
         let reward = (score_new - score_old) as f64;
 
@@ -287,9 +309,42 @@ impl ThreesEnv {
         let effective_alpha = alpha / num_tuples;
 
         // Update vào S_after, KHÔNG PHẢI S hiện tại
-        brain.update_weights_td_lambda(&s_after_flat, td_error, effective_alpha);
+        // brain.update_weights_td_lambda(&s_after_flat, td_error, effective_alpha);
+
+        // KIỂM TRA & INIT TRACES NẾU CẦN (Lazy Init)
+        if self.traces.is_empty() {
+            let sizes: Vec<usize> = brain.weights.iter().map(|w| w.len()).collect();
+            self.reset_traces(brain.weights.len(), &sizes);
+        }
+
+        // Gọi hàm update mới, truyền traces của Env vào Brain
+        brain.update_weights_td_lambda(
+            &mut self.traces,
+            &mut self.active_trace_indices,
+            &s_after_flat,
+            td_error,
+            effective_alpha,
+        );
 
         (td_error.abs(), reward)
+    }
+
+    pub fn reset(&mut self) -> (Vec<u32>, Vec<u32>) {
+        self.game = Game::new();
+
+        // Reset traces khi game mới bắt đầu (nếu đã được init)
+        if !self.traces.is_empty() {
+            // Lưu ý: reset_traces ở đây chỉ clear giá trị, không re-alloc
+            // Ta dùng logic clear nhanh đã viết trong reset_traces
+            for (table_idx, indices) in self.active_trace_indices.iter_mut().enumerate() {
+                for &feat_idx in indices.iter() {
+                    self.traces[table_idx][feat_idx] = 0.0;
+                }
+                indices.clear();
+            }
+        }
+
+        (self.get_board_flat().to_vec(), self.game.hints.clone())
     }
 
     pub fn get_board_flat(&self) -> [u32; 16] {
