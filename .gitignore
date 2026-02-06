@@ -5,3 +5,4 @@
 /logs_ppo_threes_resnet_old
 *.dat
 *.msgpack
+best_replay.json

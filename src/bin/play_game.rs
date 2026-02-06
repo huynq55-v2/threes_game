@@ -105,6 +105,27 @@ pub struct Transition {
     pub end_state: RenderState,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct StepData {
+    direction: usize,
+    board: [[u32; 4]; 4],
+    score: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct GameReplay {
+    score: f64,
+    max_tile: u32,
+    initial_board: [[u32; 4]; 4],
+    steps: Vec<StepData>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct StepDataLocal {
+    // avoid conflict if needed, but sticking to identical names
+    // ...
+}
+
 // ============================================================================
 // TRANSITION LOGIC
 // ============================================================================
@@ -555,151 +576,220 @@ async fn main() {
     // Previous state snapshot (for static display if needed, but we assume we move to target)
     let mut render_state = RenderState::from_game(&env.game);
 
+    // Replay state
+    let mut replay_data: Option<GameReplay> = None;
+    let mut is_replay_mode = false;
+    let mut replay_step = 0;
+    let mut replay_auto_play = false;
+    let mut last_replay_step_time = get_time();
+
     loop {
         clear_background(get_bg_color());
 
-        // --- INPUT & UPDATE ---
-        if is_key_pressed(KeyCode::Space) {
-            ai_enabled = !ai_enabled;
-        }
-        if is_key_pressed(KeyCode::R) {
-            env.reset();
-            animation_t = 100.0;
-            current_transition = None;
-            render_state = RenderState::from_game(&env.game);
-        }
-        if is_key_pressed(KeyCode::Equal) {
-            ai_speed = (ai_speed * 1.5).min(20.0);
-        }
-        if is_key_pressed(KeyCode::Minus) {
-            ai_speed = (ai_speed / 1.5).max(0.5);
-        }
+        if is_key_pressed(KeyCode::L) {
+            // Try load replay
+            if let Ok(content) = std::fs::read_to_string("best_replay.json") {
+                if let Ok(parsed) = serde_json::from_str::<GameReplay>(&content) {
+                    replay_data = Some(parsed);
+                    is_replay_mode = true;
+                    replay_step = 0;
+                    replay_auto_play = true;
 
-        let manual_action = if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W) {
-            Some(0)
-        } else if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S) {
-            Some(1)
-        } else if is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::A) {
-            Some(2)
-        } else if is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::D) {
-            Some(3)
-        } else {
-            None
-        };
-
-        // Process Move if not animating (or animation almost done)
-        // Allow strict turn based? Yes.
-        // If animation is happening, we block new moves or fast forward?
-        // Let's block until animation is sufficiently done (e.g. > 0.8) for fast play,
-        // OR strict blocking (>= 1.0). For visuals, blocking is safer.
-        let can_input = animation_t >= 1.0 && !env.game.game_over;
-
-        if can_input {
-            let mut action = None;
-
-            if let Some(act) = manual_action {
-                action = Some(act);
-            } else if ai_enabled {
-                let current_time = get_time();
-                if current_time - last_ai_move_time >= (1.0 / ai_speed as f64) {
-                    if let Some(ref b) = brain {
-                        action = Some(get_ai_action(&env, b, EPSILON));
-                    } else {
-                        action = Some(env.get_random_valid_action());
+                    // Init replay state
+                    if let Some(ref r) = replay_data {
+                        env.game.score = 0.0; // Start
+                                              // Set board to initial
+                        for row in 0..4 {
+                            for col in 0..4 {
+                                env.game.board[row][col].value = r.initial_board[row][col];
+                            }
+                        }
+                        render_state = RenderState::from_game(&env.game); // Update visual
                     }
-                    last_ai_move_time = current_time;
+                    println!("Loaded Replay!");
+                } else {
+                    println!("Failed to parse best_replay.json");
+                }
+            } else {
+                println!("Could not read best_replay.json");
+            }
+        }
+
+        if is_replay_mode {
+            // REPLAY LOGIC
+            if is_key_pressed(KeyCode::R) {
+                is_replay_mode = false;
+                replay_data = None;
+                env.reset();
+                render_state = RenderState::from_game(&env.game);
+            }
+            if is_key_pressed(KeyCode::Space) {
+                replay_auto_play = !replay_auto_play;
+            }
+
+            let mut step_change = 0;
+            if is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::D) {
+                step_change = 1;
+                replay_auto_play = false;
+            }
+            if is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::A) {
+                step_change = -1;
+                replay_auto_play = false;
+            }
+
+            if replay_auto_play {
+                if get_time() - last_replay_step_time > 0.3 {
+                    // 300ms per step
+                    step_change = 1;
+                    last_replay_step_time = get_time();
                 }
             }
 
-            if let Some(act) = action {
-                let dir = match act {
-                    0 => Direction::Up,
-                    1 => Direction::Down,
-                    2 => Direction::Left,
-                    3 => Direction::Right,
-                    _ => Direction::Up,
-                };
+            if step_change != 0 {
+                if let Some(ref r) = replay_data {
+                    let new_step =
+                        (replay_step as i32 + step_change).clamp(0, r.steps.len() as i32) as usize;
 
-                if env.game.can_move(dir) {
-                    // 1. Calculate Transition Events
-                    let mut transition = calculate_transition(&env.game, dir);
+                    if new_step != replay_step {
+                        replay_step = new_step;
 
-                    // 2. Compute SPAWN location
-                    // We need to compare board states.
-                    // Let's take snapshot of values projected by move
-                    // Or easier: Execute move on Game, then find the new tile.
-
-                    let board_before = env.game.get_board_flat();
-
-                    // EXECUTE MOVE
-                    env.game.move_dir(dir);
-                    env.game.check_game_over();
-
-                    // FIND SPAWN: The tile that appeared in a location that was Empty or different from projected?
-                    // Actually, Threes logic: Spawn happens at the edge of shifted rows.
-                    // `transition.events` tell us where tiles moved.
-                    // But determining specifically which tile is the "new" one among duplicates is tricky unless we track IDs.
-                    // But we don't have IDs.
-                    // Heuristic: The `calculate_transition` predicts the state of the board *after shift* but *before spawn*.
-                    // We can reconstruct that theoretical grid.
-
-                    let mut predicted_grid = [[0u32; 4]; 4]; // This is effectively "after shift"
-                                                             // Initialize with 0.
-                                                             // Replay events to fill predicted_grid
-                    for event in &transition.events {
-                        // Events describe Source -> Target.
-                        // Wait, logic:
-                        // `row` scan logic in `calculate_transition`:
-                        // Static tiles: val -> val at same index.
-                        // Slide/Merge: val -> target.
-                        // So iterating events covers all determining tiles.
-
-                        // BUT `calculate_transition` misses one case:
-                        // Empty tiles that stay empty? (Not in events).
-                        // If we init with 0, it's fine.
-
-                        match event.action {
-                            ActionType::Merge => {
-                                let (r, c) = (event.to_index / 4, event.to_index % 4);
-                                predicted_grid[r][c] = event.merged_value.unwrap_or(event.value);
+                        // Apply state
+                        if replay_step == 0 {
+                            // Initial
+                            for row in 0..4 {
+                                for col in 0..4 {
+                                    env.game.board[row][col].value = r.initial_board[row][col];
+                                }
                             }
-                            ActionType::Slide => {
-                                let (r, c) = (event.to_index / 4, event.to_index % 4);
-                                predicted_grid[r][c] = event.value;
+                            env.game.score = 0.0;
+                        } else {
+                            let step_idx = replay_step - 1;
+                            let step = &r.steps[step_idx];
+                            for row in 0..4 {
+                                for col in 0..4 {
+                                    env.game.board[row][col].value = step.board[row][col];
+                                }
                             }
-                            ActionType::Static => {
-                                let (r, c) = (event.to_index / 4, event.to_index % 4);
-                                predicted_grid[r][c] = event.value;
-                            }
-                            _ => {}
+                            env.game.score = step.score;
                         }
-                    }
 
-                    // Now compare `predicted_grid` with `env.game.board`
-                    // The difference is the Spawn.
-                    for r in 0..4 {
-                        for c in 0..4 {
-                            let actual = env.game.board[r][c].value;
-                            let pred = predicted_grid[r][c];
-                            if actual != pred {
-                                // This must be the spawn!
-                                transition.events.push(TileEvent {
-                                    from_index: r * 4 + c, // Spawns in place
-                                    to_index: r * 4 + c,
-                                    action: ActionType::Spawn,
-                                    value: actual,
-                                    merged_value: None,
-                                });
+                        // Update visual immediately (no smooth transition for replay yet)
+                        render_state = RenderState::from_game(&env.game);
+                        animation_t = 100.0; // No animation for replay skipping
+                    }
+                }
+            }
+        } else {
+            // NORMAL GAMEPLAY LOGIC
+            if is_key_pressed(KeyCode::Space) {
+                ai_enabled = !ai_enabled;
+            }
+            if is_key_pressed(KeyCode::R) {
+                env.reset();
+                animation_t = 100.0;
+                current_transition = None;
+                render_state = RenderState::from_game(&env.game);
+            }
+            if is_key_pressed(KeyCode::Equal) {
+                ai_speed = (ai_speed * 1.5).min(20.0);
+            }
+            if is_key_pressed(KeyCode::Minus) {
+                ai_speed = (ai_speed / 1.5).max(0.5);
+            }
+
+            let manual_action = if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W) {
+                Some(0)
+            } else if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S) {
+                Some(1)
+            } else if is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::A) {
+                Some(2)
+            } else if is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::D) {
+                Some(3)
+            } else {
+                None
+            };
+
+            // Process Move if not animating ...
+            let can_input = animation_t >= 1.0 && !env.game.game_over;
+
+            if can_input {
+                let mut action = None;
+
+                if let Some(act) = manual_action {
+                    action = Some(act);
+                } else if ai_enabled {
+                    let current_time = get_time();
+                    if current_time - last_ai_move_time >= (1.0 / ai_speed as f64) {
+                        if let Some(ref b) = brain {
+                            action = Some(get_ai_action(&env, b, EPSILON));
+                        } else {
+                            action = Some(env.get_random_valid_action());
+                        }
+                        last_ai_move_time = current_time;
+                    }
+                }
+
+                if let Some(act) = action {
+                    let dir = match act {
+                        0 => Direction::Up,
+                        1 => Direction::Down,
+                        2 => Direction::Left,
+                        3 => Direction::Right,
+                        _ => Direction::Up,
+                    };
+
+                    if env.game.can_move(dir) {
+                        // 1. Calculate Transition Events
+                        let mut transition = calculate_transition(&env.game, dir);
+
+                        // EXECUTE MOVE
+                        env.game.move_dir(dir);
+                        env.game.check_game_over();
+
+                        // FIND SPAWN Logic...
+                        let mut predicted_grid = [[0u32; 4]; 4];
+
+                        for event in &transition.events {
+                            match event.action {
+                                ActionType::Merge => {
+                                    let (r, c) = (event.to_index / 4, event.to_index % 4);
+                                    predicted_grid[r][c] =
+                                        event.merged_value.unwrap_or(event.value);
+                                }
+                                ActionType::Slide => {
+                                    let (r, c) = (event.to_index / 4, event.to_index % 4);
+                                    predicted_grid[r][c] = event.value;
+                                }
+                                ActionType::Static => {
+                                    let (r, c) = (event.to_index / 4, event.to_index % 4);
+                                    predicted_grid[r][c] = event.value;
+                                }
+                                _ => {}
                             }
                         }
+
+                        for r in 0..4 {
+                            for c in 0..4 {
+                                let actual = env.game.board[r][c].value;
+                                let pred = predicted_grid[r][c];
+                                if actual != pred {
+                                    transition.events.push(TileEvent {
+                                        from_index: r * 4 + c,
+                                        to_index: r * 4 + c,
+                                        action: ActionType::Spawn,
+                                        value: actual,
+                                        merged_value: None,
+                                    });
+                                }
+                            }
+                        }
+
+                        transition.end_state = RenderState::from_game(&env.game);
+                        current_transition = Some(transition);
+                        render_state = RenderState::from_game(&env.game);
+
+                        animation_t = 0.0;
                     }
-
-                    // 3. Update State
-                    transition.end_state = RenderState::from_game(&env.game);
-                    current_transition = Some(transition);
-                    render_state = RenderState::from_game(&env.game); // Update displayed score immediately or after?
-
-                    animation_t = 0.0;
                 }
             }
         }
@@ -713,11 +803,24 @@ async fn main() {
             animation_t += get_frame_time(); // Keep ticking for pop decay logic
         }
 
+        if is_replay_mode {
+            draw_text("REPLAY MODE", 160.0, 30.0, 30.0, Color::from_hex(0x00cec9));
+            if let Some(ref r) = replay_data {
+                draw_text(
+                    &format!("Step: {} / {}", replay_step, r.steps.len()),
+                    160.0,
+                    60.0,
+                    20.0,
+                    WHITE,
+                );
+            }
+        }
+
         draw_header_info(
             render_state.score,
             env.game.get_highest_tile_value(),
             env.game.num_move,
-            ai_enabled,
+            ai_enabled && !is_replay_mode,
             ai_speed,
         );
         draw_hints(&render_state.next_hints);

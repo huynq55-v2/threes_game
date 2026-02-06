@@ -27,6 +27,21 @@ enum TrainingPolicy {
 unsafe impl Send for SharedBrain {}
 unsafe impl Sync for SharedBrain {}
 
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct StepData {
+    direction: usize,
+    board: [[u32; 4]; 4],
+    score: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct GameReplay {
+    score: f64,
+    max_tile: u32,
+    initial_board: [[u32; 4]; 4],
+    steps: Vec<StepData>,
+}
+
 fn main() {
     let num_threads = 8;
     let gamma = 0.995;
@@ -473,7 +488,7 @@ fn main() {
 
         // Train thật 80k games với config mới trên nền merged brain
         // Truyền hot_config để có thể override bất cứ lúc nào!
-        let (eval_avg, eval_max, trained_eval_brain) = run_evaluation_training(
+        let (eval_avg, eval_max, trained_eval_brain, best_replay_opt) = run_evaluation_training(
             eval_brain,
             best_config,
             eval_games,
@@ -484,6 +499,19 @@ fn main() {
             training_policy,
             hot_config.clone(), // 🔥 TRUYỀN HOT CONFIG VÀO!
         );
+
+        // Lưu replay tốt nhất nếu có
+        if let Some(replay) = best_replay_opt {
+            let replay_json = serde_json::to_string(&replay).unwrap();
+            if let Err(e) = std::fs::write("best_replay.json", replay_json) {
+                eprintln!("⚠️ Failed to save replay: {}", e);
+            } else {
+                println!(
+                    "🎬 Saved Best Replay of this iteration (Score: {:.0}) to best_replay.json",
+                    replay.score
+                );
+            }
+        }
 
         let duration = loop_start.elapsed();
         println!(
@@ -646,8 +674,8 @@ fn run_evaluation_training(
     start_offset: u32,
     policy: TrainingPolicy,
     hot_config: Arc<RwLock<HotLoadConfig>>, // 🔥 HOT CONFIG ĐÃ THÊM!
-) -> (f64, f64, NTupleNetwork) {
-    // Trả về (Avg Score, Max Score, Trained Brain)
+) -> (f64, f64, NTupleNetwork, Option<GameReplay>) {
+    // Trả về (Avg Score, Max Score, Trained Brain, Best Replay)
 
     // Tạo shared pointer để các thread cùng update weights
     let brain_ptr = SharedBrain {
@@ -658,7 +686,8 @@ fn run_evaluation_training(
     let ep_per_thread = total_games / num_threads;
 
     // Chạy song song - mỗi thread train một phần games
-    let results: Vec<Vec<f64>> = (0..num_threads)
+    // Return: (local_scores, local_best_replay)
+    let results: Vec<(Vec<f64>, Option<GameReplay>)> = (0..num_threads)
         .into_par_iter()
         .map(|t_id| {
             let mut local_env = ThreesEnv::new(gamma);
@@ -668,6 +697,9 @@ fn run_evaluation_training(
 
             let mut local_scores = Vec::with_capacity(ep_per_thread as usize);
             let mut rng = rand::rng();
+
+            let mut local_best_replay: Option<GameReplay> = None;
+            let mut local_max_score = 0.0;
 
             for local_ep in 0..ep_per_thread {
                 let current_global_ep = (local_ep * num_threads + t_id) + start_offset;
@@ -711,6 +743,19 @@ fn run_evaluation_training(
 
                 // GAME LOOP
                 local_env.reset();
+
+                // TRACKING FOR REPLAY
+                let mut current_steps = Vec::new();
+                let initial_board_state = {
+                    let mut arr = [[0u32; 4]; 4];
+                    for r in 0..4 {
+                        for c in 0..4 {
+                            arr[r][c] = local_env.game.board[r][c].value;
+                        }
+                    }
+                    arr
+                };
+
                 let mut step_count = 0;
                 while !local_env.game.game_over {
                     step_count += 1;
@@ -729,11 +774,40 @@ fn run_evaluation_training(
                         }
                     };
 
-                    // TRAIN THẬT - update weights
+                    // Execute Step
                     local_env.train_step(local_brain, action, current_alpha);
+
+                    // Record Step
+                    let board_snap = {
+                        let mut arr = [[0u32; 4]; 4];
+                        for r in 0..4 {
+                            for c in 0..4 {
+                                arr[r][c] = local_env.game.board[r][c].value;
+                            }
+                        }
+                        arr
+                    };
+
+                    current_steps.push(StepData {
+                        direction: action as usize,
+                        board: board_snap,
+                        score: local_env.game.score,
+                    });
                 }
 
-                local_scores.push(local_env.game.score as f64);
+                let game_score = local_env.game.score as f64;
+                local_scores.push(game_score);
+
+                // Update Request Best Replay
+                if game_score > local_max_score {
+                    local_max_score = game_score;
+                    local_best_replay = Some(GameReplay {
+                        score: game_score,
+                        max_tile: local_env.game.get_highest_tile_value(),
+                        initial_board: initial_board_state,
+                        steps: current_steps,
+                    });
+                }
 
                 // Log progress (chỉ thread 0)
                 if t_id == 0 && local_ep % 1000 == 0 {
@@ -750,15 +824,28 @@ fn run_evaluation_training(
                 }
             }
 
-            local_scores
+            (local_scores, local_best_replay)
         })
         .collect();
 
     println!(); // Newline sau progress
 
-    let all_scores: Vec<f64> = results.into_iter().flatten().collect();
+    let all_scores: Vec<f64> = results.iter().map(|(s, _)| s).flatten().cloned().collect();
     let avg = all_scores.iter().sum::<f64>() / all_scores.len() as f64;
     let max = all_scores.iter().fold(0.0f64, |a, &b| a.max(b));
+
+    // Find global best replay
+    let mut global_best_replay: Option<GameReplay> = None;
+    let mut global_max_score = 0.0;
+
+    for (_, replay_opt) in results {
+        if let Some(replay) = replay_opt {
+            if replay.score > global_max_score {
+                global_max_score = replay.score;
+                global_best_replay = Some(replay);
+            }
+        }
+    }
 
     // Tính điểm trung bình của 10% thấp nhất (Bottom 10%)
     let mut sorted_scores = all_scores.clone();
@@ -771,5 +858,5 @@ fn run_evaluation_training(
         bot10_avg, bot10_count
     );
 
-    (avg, max, brain)
+    (avg, max, brain, global_best_replay)
 }
