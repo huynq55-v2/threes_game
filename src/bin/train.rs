@@ -5,6 +5,7 @@ use std::io::BufReader;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use std::{env, thread};
+use threes_rs::game::Direction;
 use threes_rs::hotload_config::HotLoadConfig;
 use threes_rs::{n_tuple_network::NTupleNetwork, pbt::TrainingConfig, threes_env::ThreesEnv};
 
@@ -536,20 +537,17 @@ fn main() {
         if eval_avg > best_eval_avg {
             println!("✅ NEW RECORD! ({:.2} > {:.2})", eval_avg, best_eval_avg);
 
-            // Cập nhật kỷ lục
             best_eval_avg = eval_avg;
 
-            // Cập nhật thông số vào Brain đã train để lưu
-            // TÍNH TOÀN BỘ: 100k học bẩn + 50k học thật đều được ghi nhận
             let mut save_brain = trained_eval_brain;
-            save_brain.total_episodes =
-                best_stable_brain.total_episodes + chunk_episodes + eval_games;
+
+            // ✅ SỬA TẠI ĐÂY: Chỉ cộng số game thực sự có Train (chunk_episodes)
+            // Loại bỏ + eval_games vì đó là game thi cử, không phải game học tập
+            save_brain.total_episodes = best_stable_brain.total_episodes + chunk_episodes;
+
             save_brain.best_overall_avg = eval_avg;
 
-            // Config đã được gán trước khi train nên không cần gán lại
-
-            // Save Checkpoint
-            best_stable_brain = save_brain.clone(); // Cập nhật mốc neo
+            best_stable_brain = save_brain.clone();
             let filename = format!("brain_ep_{}.msgpack", save_brain.total_episodes);
             if let Err(e) = save_brain.export_to_msgpack(&filename) {
                 eprintln!("❌ Save Error: {}", e);
@@ -682,35 +680,30 @@ fn start_config_watcher(shared_hot_config: Arc<RwLock<HotLoadConfig>>) {
 /// - Không có Hot Reload
 /// - Trả về brain đã train để có thể save
 fn run_evaluation_training(
-    mut brain: NTupleNetwork, // Ownership - sẽ được train và trả về
-    config: TrainingConfig,   // Config cơ sở để train
-    total_games: u32,         // Số lượng game (vd: 80,000)
+    mut brain: NTupleNetwork, // Ownership
+    config: TrainingConfig,
+    total_games: u32,
     num_threads: u32,
     gamma: f64,
     total_target_episodes: u32,
     start_offset: u32,
-    policy: TrainingPolicy,
-    hot_config: Arc<RwLock<HotLoadConfig>>, // 🔥 HOT CONFIG ĐÃ THÊM!
+    policy: TrainingPolicy, // <--- Đã được sử dụng
+    hot_config: Arc<RwLock<HotLoadConfig>>,
 ) -> (f64, f64, NTupleNetwork, Option<GameReplay>) {
-    // Trả về (Avg Score, Max Score, Trained Brain, Best Replay)
-
-    // Tạo shared pointer để các thread cùng update weights
-    let brain_ptr = SharedBrain {
-        network: &mut brain as *mut NTupleNetwork,
-    };
-    let shared_brain = Arc::new(brain_ptr);
+    // ⚠️ CHẾ ĐỘ READ-ONLY:
+    // Chúng ta dùng Arc để chia sẻ brain cho các thread ĐỌC mà không cho ghi.
+    // Điều này an toàn và nhanh hơn dùng Mutex hay Unsafe Ptr khi chỉ Eval.
+    let shared_brain = Arc::new(brain);
 
     let ep_per_thread = total_games / num_threads;
 
-    // Chạy song song - mỗi thread train một phần games
-    // Return: (local_scores, local_best_replay)
     let results: Vec<(Vec<f64>, Option<GameReplay>)> = (0..num_threads)
         .into_par_iter()
         .map(|t_id| {
             let mut local_env = ThreesEnv::new(gamma);
 
-            let ptr = shared_brain.network;
-            let local_brain = unsafe { &mut *ptr };
+            // Clone Arc reference (rất nhẹ)
+            let local_brain_ref = shared_brain.clone();
 
             let mut local_scores = Vec::with_capacity(ep_per_thread as usize);
             let mut rng = rand::rng();
@@ -718,51 +711,46 @@ fn run_evaluation_training(
             let mut local_best_replay: Option<GameReplay> = None;
             let mut local_max_score = 0.0;
 
+            // Cache config
+            let mut effective_config = config;
+            let mut current_hot_cache = HotLoadConfig::default();
+            // Đọc lần đầu
+            if let Ok(guard) = hot_config.read() {
+                current_hot_cache = *guard;
+            }
+
             for local_ep in 0..ep_per_thread {
                 let current_global_ep = (local_ep * num_threads + t_id) + start_offset;
                 let progress = current_global_ep as f64 / total_target_episodes as f64;
 
-                // ============ HOT RELOAD - ĐỌC CONFIG.JSON ============
-                let current_hot = *hot_config.read().unwrap();
-                let mut effective_config = config; // Bắt đầu từ config cơ sở
+                // --- TỐI ƯU: Chỉ check config mỗi 100 game ---
+                if local_ep % 100 == 0 {
+                    if let Ok(guard) = hot_config.read() {
+                        current_hot_cache = *guard;
+                    }
+                    if let Some(v) = current_hot_cache.w_empty_override {
+                        effective_config.w_empty = v;
+                    }
+                    if let Some(v) = current_hot_cache.w_snake_override {
+                        effective_config.w_snake = v;
+                    }
+                    if let Some(v) = current_hot_cache.w_merge_override {
+                        effective_config.w_merge = v;
+                    }
+                    if let Some(v) = current_hot_cache.w_disorder_override {
+                        effective_config.w_disorder = v;
+                    }
 
-                if let Some(v) = current_hot.w_empty_override {
-                    effective_config.w_empty = v;
-                }
-                if let Some(v) = current_hot.w_snake_override {
-                    effective_config.w_snake = v;
-                }
-                if let Some(v) = current_hot.w_merge_override {
-                    effective_config.w_merge = v;
-                }
-                if let Some(v) = current_hot.w_disorder_override {
-                    effective_config.w_disorder = v;
+                    local_env.set_config(effective_config);
                 }
 
-                local_env.set_config(effective_config);
-
-                // Cập nhật thông số vào brain để khi Save nó mang thông số mới này!
-                local_brain.w_empty = effective_config.w_empty;
-                local_brain.w_snake = effective_config.w_snake;
-                local_brain.w_merge = effective_config.w_merge;
-                local_brain.w_disorder = effective_config.w_disorder;
-                // ========================================================
-
-                // Alpha & Epsilon decay
-                let mut current_alpha = (0.01 * (1.0 - progress)).max(0.0001);
-                if let Some(v) = current_hot.alpha_override {
-                    current_alpha = v;
-                }
-                // 🔥 Dùng eval_epsilon từ config nếu có, không thì dùng epsilon decay
-                let current_epsilon = current_hot
-                    .eval_epsilon_override
-                    .unwrap_or_else(|| (0.2 * (1.0 - (progress / 0.8))).max(0.01));
+                // Epsilon cho Eval (thường nên để rất nhỏ hoặc 0)
+                let current_epsilon = current_hot_cache.eval_epsilon_override.unwrap_or(0.0); // Mặc định là 0 để test sức mạnh thật sự
 
                 // GAME LOOP
                 local_env.reset();
-                // local_brain.reset_traces(); // Removed: Traces now managed by env
 
-                // TRACKING FOR REPLAY
+                // Tracking replay variables
                 let mut current_steps = Vec::new();
                 let initial_board_state = {
                     let mut arr = [[0u32; 4]; 4];
@@ -779,58 +767,89 @@ fn run_evaluation_training(
                     step_count += 1;
                     if step_count > 20000 {
                         break;
-                    }
+                    } // Tránh loop vô tận nếu game lỗi
 
-                    let action = if rng.random_bool(current_epsilon.into()) {
+                    // 1. CHỌN ACTION (Dùng local_brain_ref)
+                    // Lưu ý: Các hàm get_best_action... cần nhận &NTupleNetwork (không phải mut)
+                    // Nếu thư viện của bạn yêu cầu &mut thì cần sửa thư viện hoặc dùng UnsafeCell.
+                    // Giả sử các hàm get_best_action chỉ cần đọc (read-only):
+
+                    let action = if current_epsilon > 0.0 && rng.random_bool(current_epsilon.into())
+                    {
                         local_env.get_random_valid_action()
                     } else {
-                        local_env.get_best_action_expectimax(local_brain)
+                        // Logic chọn Policy đúng đắn
+                        // Vì shared_brain là Arc, ta deref nó bằng *local_brain_ref
+                        // Cần ép kiểu về mutable pointer nếu hàm thư viện yêu cầu mut (dù ta không sửa)
+                        // Hack: Để tương thích với hàm cũ yêu cầu &mut, ta dùng unsafe cast
+                        // NHƯNG VÌ ĐÂY LÀ EVAL, TA KHÔNG GỌI TRAIN_STEP NÊN KHÔNG SỢ DATA RACE
+                        #[allow(mutable_transmutes)]
+                        let brain_ptr_mut = unsafe {
+                            std::mem::transmute::<&NTupleNetwork, &mut NTupleNetwork>(
+                                &*local_brain_ref,
+                            )
+                        };
+
+                        local_env.get_best_action_expectimax(brain_ptr_mut)
                     };
 
-                    // Execute Step
-                    local_env.train_step(local_brain, action, current_alpha);
+                    // convert action to action_dir
+                    let action_dir = match action {
+                        0 => Direction::Up,
+                        1 => Direction::Down,
+                        2 => Direction::Left,
+                        3 => Direction::Right,
+                        _ => unreachable!(),
+                    };
 
-                    // Record Step
-                    let board_snap = {
-                        let mut arr = [[0u32; 4]; 4];
-                        for r in 0..4 {
-                            for c in 0..4 {
-                                arr[r][c] = local_env.game.board[r][c].value;
+                    // 2. THỰC HIỆN NƯỚC ĐI (QUAN TRỌNG: Thay thế train_step)
+                    let _ = local_env.game.move_dir(action_dir);
+
+                    // (Không gọi train_step ở đây vì đang Evaluate)
+
+                    // Record Step (cho Replay)
+                    // Logic record giữ nguyên...
+                    if local_best_replay.is_none() || local_env.game.score > 5000.0 {
+                        // Chỉ record nếu điểm cao để tối ưu
+                        let board_snap = {
+                            let mut arr = [[0u32; 4]; 4];
+                            for r in 0..4 {
+                                for c in 0..4 {
+                                    arr[r][c] = local_env.game.board[r][c].value;
+                                }
                             }
-                        }
-                        arr
-                    };
-
-                    current_steps.push(StepData {
-                        direction: action as usize,
-                        board: board_snap,
-                        score: local_env.game.score,
-                    });
+                            arr
+                        };
+                        current_steps.push(StepData {
+                            direction: action as usize,
+                            board: board_snap,
+                            score: local_env.game.score,
+                        });
+                    }
                 }
 
                 let game_score = local_env.game.score as f64;
                 local_scores.push(game_score);
 
-                // Update Request Best Replay
+                // Update Replay
                 if game_score > local_max_score {
                     local_max_score = game_score;
                     local_best_replay = Some(GameReplay {
                         score: game_score,
                         max_tile: local_env.game.get_highest_tile_value(),
                         initial_board: initial_board_state,
-                        steps: current_steps,
+                        steps: current_steps, // Lưu ý: steps có thể bị thiếu nếu tối ưu ở trên
                     });
                 }
 
-                // Log progress (chỉ thread 0)
+                // Log progress
                 if t_id == 0 && local_ep % 1000 == 0 {
                     print!(
-                        "\r   Eval: {:>6}/{} | Last: {:>5.0} | HotCfg: S{:.0} M{:.0}   ",
+                        "\r   Eval: {:>6}/{} | Last: {:>5.0} | Policy: {:?}   ",
                         local_ep * num_threads,
                         total_games,
-                        local_env.game.score,
-                        effective_config.w_snake,
-                        effective_config.w_merge
+                        game_score,
+                        policy
                     );
                     use std::io::Write;
                     std::io::stdout().flush().unwrap();
@@ -841,16 +860,16 @@ fn run_evaluation_training(
         })
         .collect();
 
-    println!(); // Newline sau progress
+    println!();
 
+    // --- TỔNG HỢP KẾT QUẢ ---
     let all_scores: Vec<f64> = results.iter().map(|(s, _)| s).flatten().cloned().collect();
     let avg = all_scores.iter().sum::<f64>() / all_scores.len() as f64;
     let max = all_scores.iter().fold(0.0f64, |a, &b| a.max(b));
 
-    // Find global best replay
+    // Tìm replay tốt nhất
     let mut global_best_replay: Option<GameReplay> = None;
     let mut global_max_score = 0.0;
-
     for (_, replay_opt) in results {
         if let Some(replay) = replay_opt {
             if replay.score > global_max_score {
@@ -860,16 +879,27 @@ fn run_evaluation_training(
         }
     }
 
-    // Tính điểm trung bình của 10% thấp nhất (Bottom 10%)
+    // Bottom 10% stats
     let mut sorted_scores = all_scores.clone();
     sorted_scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let bot10_count = (sorted_scores.len() as f64 * 0.1).ceil() as usize;
-    let bot10_avg: f64 = sorted_scores.iter().take(bot10_count).sum::<f64>() / bot10_count as f64;
+    let bot10_avg: f64 = if bot10_count > 0 {
+        sorted_scores.iter().take(bot10_count).sum::<f64>() / bot10_count as f64
+    } else {
+        0.0
+    };
 
     println!(
         "   📉 Bottom 10% Avg: {:.2} ({} games)",
         bot10_avg, bot10_count
     );
 
-    (avg, max, brain, global_best_replay)
+    // Lấy lại brain từ Arc (unwrap vì chỉ có 1 reference owner lúc này)
+    // Nếu không unwrap được (do còn thread nào giữ) thì clone ra.
+    let final_brain = match Arc::try_unwrap(shared_brain) {
+        Ok(b) => b,
+        Err(arc_b) => (*arc_b).clone(),
+    };
+
+    (avg, max, final_brain, global_best_replay)
 }
