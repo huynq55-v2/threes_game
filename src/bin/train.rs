@@ -126,7 +126,9 @@ fn main() {
     println!("🔥 Hot Reload ENABLED - Đang theo dõi config.json");
     // let pbt_manager = Arc::new(Mutex::new(PBTManager::new()));
 
-    let chunk_episodes = 80_000;
+    let current_hot = *hot_config.read().unwrap();
+
+    let chunk_episodes = current_hot.current_chunk.unwrap_or(80_000) as u32;
     let total_target_episodes = 100_000_000;
 
     // --- CHECKPOINT GỐC (SINGLE SOURCE OF TRUTH) ---

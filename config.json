@@ -5,5 +5,6 @@
     "w_merge_override": 0.0,
     "alpha_override": 0.05,
     "epsilon_override": 0.1,
-    "eval_epsilon_override": 0.0
+    "eval_epsilon_override": 0.0,
+    "current_chunk": 80000
 }

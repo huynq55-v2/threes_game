@@ -11,4 +11,5 @@ pub struct HotLoadConfig {
     pub alpha_override: Option<f64>,
     pub epsilon_override: Option<f64>,
     pub eval_epsilon_override: Option<f64>,
+    pub current_chunk: Option<u64>,
 }
