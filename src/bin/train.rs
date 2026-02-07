@@ -311,7 +311,10 @@ fn main() {
                     if let Some(v) = current_hot.alpha_override {
                         current_alpha = v;
                     }
-                    let current_epsilon = (0.2 * (1.0 - (progress / 0.8))).max(0.01);
+                    let mut current_epsilon = (0.2 * (1.0 - (progress / 0.8))).max(0.01);
+                    if let Some(v) = current_hot.epsilon_override {
+                        current_epsilon = v;
+                    }
 
                     local_env.reset();
                     // local_brain.reset_traces(); // Removed: Traces now managed by env
@@ -615,21 +618,22 @@ fn start_config_watcher(shared_hot_config: Arc<RwLock<HotLoadConfig>>) {
                 let reader = BufReader::new(file);
                 match serde_json::from_reader::<_, HotLoadConfig>(reader) {
                     Ok(new_cfg) => {
-                        // Chỉ log nếu config thực sự thay đổi
                         let mut changed = false;
-                        if new_cfg.w_empty_override != last_cfg.w_empty_override {
+                        // Kiểm tra thay đổi weights
+                        if new_cfg.w_empty_override != last_cfg.w_empty_override
+                            || new_cfg.w_snake_override != last_cfg.w_snake_override
+                            || new_cfg.w_merge_override != last_cfg.w_merge_override
+                            || new_cfg.w_disorder_override != last_cfg.w_disorder_override
+                        {
                             changed = true;
                         }
-                        if new_cfg.w_snake_override != last_cfg.w_snake_override {
-                            changed = true;
-                        }
-                        if new_cfg.w_merge_override != last_cfg.w_merge_override {
-                            changed = true;
-                        }
-                        if new_cfg.w_disorder_override != last_cfg.w_disorder_override {
-                            changed = true;
-                        }
+
+                        // ✅ SỬA: So sánh đúng tên biến alpha_override
                         if new_cfg.alpha_override != last_cfg.alpha_override {
+                            changed = true;
+                        }
+                        // ✅ SỬA: Thêm check epsilon thay đổi
+                        if new_cfg.epsilon_override != last_cfg.epsilon_override {
                             changed = true;
                         }
 
@@ -647,19 +651,25 @@ fn start_config_watcher(shared_hot_config: Arc<RwLock<HotLoadConfig>>) {
                             if let Some(v) = new_cfg.w_disorder_override {
                                 print!("DisOrder={:.1} ", v);
                             }
+
+                            // ✅ SỬA: In đúng tên biến
                             if let Some(v) = new_cfg.alpha_override {
                                 print!("α={:.4} ", v);
                             }
-                            println!();
+                            if let Some(v) = new_cfg.epsilon_override {
+                                print!("ε={:.4} ", v);
+                            }
+                            if let Some(v) = new_cfg.eval_epsilon_override {
+                                print!("Ev_ε={:.4} ", v);
+                            }
 
-                            last_cfg = new_cfg.clone(); // Clone để so sánh lần sau
+                            println!();
+                            last_cfg = new_cfg.clone();
                         }
                         let mut write_guard = shared_hot_config.write().unwrap();
                         *write_guard = new_cfg;
                     }
-                    Err(_e) => {
-                        // Bỏ qua lỗi parse để không làm phiền console
-                    }
+                    Err(_e) => {}
                 }
             }
         }
@@ -745,7 +755,7 @@ fn run_evaluation_training(
                 }
                 // 🔥 Dùng eval_epsilon từ config nếu có, không thì dùng epsilon decay
                 let current_epsilon = current_hot
-                    .eval_epsilon
+                    .eval_epsilon_override
                     .unwrap_or_else(|| (0.2 * (1.0 - (progress / 0.8))).max(0.01));
 
                 // GAME LOOP
@@ -774,15 +784,7 @@ fn run_evaluation_training(
                     let action = if rng.random_bool(current_epsilon.into()) {
                         local_env.get_random_valid_action()
                     } else {
-                        match policy {
-                            TrainingPolicy::Expectimax => {
-                                local_env.get_best_action_expectimax(local_brain)
-                            }
-                            TrainingPolicy::Safe => local_env.get_best_action_safe(local_brain),
-                            TrainingPolicy::Afterstate => {
-                                local_env.get_best_action_afterstate(local_brain)
-                            }
-                        }
+                        local_env.get_best_action_expectimax(local_brain)
                     };
 
                     // Execute Step
