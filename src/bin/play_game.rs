@@ -10,7 +10,7 @@ const TILE_SIZE: f32 = 100.0;
 const PADDING: f32 = 12.0;
 const BOARD_OFFSET_X: f32 = 40.0;
 const BOARD_OFFSET_Y: f32 = 140.0;
-const EPSILON: f64 = 0.01; // 1% random exploration
+const EPSILON: f64 = 0.0; // 1% random exploration
 const ANIMATION_SPEED: f32 = 5.0; // Speed of slide animation
 
 // ============================================================================
@@ -532,7 +532,7 @@ fn get_ai_action(env: &ThreesEnv, brain: &NTupleNetwork, epsilon: f64) -> u32 {
     if random_val < epsilon {
         env.get_random_valid_action()
     } else {
-        env.get_best_action_afterstate(brain)
+        env.get_best_action_safe(brain)
     }
 }
 
@@ -551,7 +551,7 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let brain = match NTupleNetwork::load_from_msgpack("brain_ep_12390000.msgpack") {
+    let brain = match NTupleNetwork::load_from_msgpack("brain_ep_4320000.msgpack") {
         Ok(b) => {
             println!("✅ Loaded brain successfully!");
             Some(b)

@@ -86,6 +86,7 @@ impl NTupleNetwork {
         };
 
         network.add_shared_snake();
+        network.add_all_2x2_squares();
 
         // network.init_weights();
         network
@@ -259,6 +260,33 @@ impl NTupleNetwork {
             // 3. Sinh 8 biến thể (Slaves) trỏ về Master Weight này
             self.add_symmetries_shared(base_indices, current_weight_id);
         }
+    }
+
+    pub fn add_all_2x2_squares(&mut self) {
+        let table_size = 15usize.pow(4); // 2x2 có 4 ô
+
+        // --- NHÓM 1: 4 GÓC (Corners) ---
+        // Đại diện là góc trên-trái: [0, 1, 4, 5]
+        self.weights.push(vec![0.0; table_size]);
+        let id_corner = self.weights.len() - 1;
+        self.add_symmetries_shared(vec![0, 1, 4, 5], id_corner);
+
+        // --- NHÓM 2: 4 CẠNH (Edge-Middles) ---
+        // Đại diện là khối nằm giữa hàng trên: [1, 2, 5, 6]
+        self.weights.push(vec![0.0; table_size]);
+        let id_edge = self.weights.len() - 1;
+        self.add_symmetries_shared(vec![1, 2, 5, 6], id_edge);
+
+        // --- NHÓM 3: 1 TRUNG TÂM (Center) ---
+        // Khối nằm chính giữa: [5, 6, 9, 10]
+        self.weights.push(vec![0.0; table_size]);
+        let id_center = self.weights.len() - 1;
+        self.add_symmetries_shared(vec![5, 6, 9, 10], id_center);
+
+        println!(
+            "✅ Added 9 Squares (3 master tables). Total weight tables: {}",
+            self.weights.len()
+        );
     }
 
     pub fn encode_tile(value: u32) -> usize {
