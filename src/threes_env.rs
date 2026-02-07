@@ -269,7 +269,11 @@ impl ThreesEnv {
         let score_new = self.game.score;
         // let _phi_new = get_composite_potential(&self.game.board, &self.config);
 
-        let reward = (score_new - score_old) as f64;
+        let mut reward = (score_new - score_old) as f64;
+
+        // if self.game.check_game_over() {
+        //     reward -= 260.0;
+        // }
 
         // 3. Tính V(S'_after) cho bước tiếp theo (TD Target)
         let v_next_after = if done {

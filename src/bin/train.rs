@@ -680,50 +680,38 @@ fn start_config_watcher(shared_hot_config: Arc<RwLock<HotLoadConfig>>) {
 /// - Không có Hot Reload
 /// - Trả về brain đã train để có thể save
 fn run_evaluation_training(
-    mut brain: NTupleNetwork, // Ownership
+    mut brain: NTupleNetwork,
     config: TrainingConfig,
     total_games: u32,
     num_threads: u32,
     gamma: f64,
     total_target_episodes: u32,
     start_offset: u32,
-    policy: TrainingPolicy, // <--- Đã được sử dụng
+    policy: TrainingPolicy,
     hot_config: Arc<RwLock<HotLoadConfig>>,
 ) -> (f64, f64, NTupleNetwork, Option<GameReplay>) {
-    // ⚠️ CHẾ ĐỘ READ-ONLY:
-    // Chúng ta dùng Arc để chia sẻ brain cho các thread ĐỌC mà không cho ghi.
-    // Điều này an toàn và nhanh hơn dùng Mutex hay Unsafe Ptr khi chỉ Eval.
     let shared_brain = Arc::new(brain);
-
     let ep_per_thread = total_games / num_threads;
 
-    let results: Vec<(Vec<f64>, Option<GameReplay>)> = (0..num_threads)
+    // Thay đổi kiểu trả về để chứa thêm step_count: (Vec<(score, steps)>, replay)
+    let results: Vec<(Vec<(f64, usize)>, Option<GameReplay>)> = (0..num_threads)
         .into_par_iter()
         .map(|t_id| {
             let mut local_env = ThreesEnv::new(gamma);
-
-            // Clone Arc reference (rất nhẹ)
             let local_brain_ref = shared_brain.clone();
-
-            let mut local_scores = Vec::with_capacity(ep_per_thread as usize);
+            let mut local_results = Vec::with_capacity(ep_per_thread as usize);
             let mut rng = rand::rng();
 
             let mut local_best_replay: Option<GameReplay> = None;
             let mut local_max_score = 0.0;
 
-            // Cache config
             let mut effective_config = config;
             let mut current_hot_cache = HotLoadConfig::default();
-            // Đọc lần đầu
             if let Ok(guard) = hot_config.read() {
                 current_hot_cache = *guard;
             }
 
             for local_ep in 0..ep_per_thread {
-                let current_global_ep = (local_ep * num_threads + t_id) + start_offset;
-                let progress = current_global_ep as f64 / total_target_episodes as f64;
-
-                // --- TỐI ƯU: Chỉ check config mỗi 100 game ---
                 if local_ep % 100 == 0 {
                     if let Ok(guard) = hot_config.read() {
                         current_hot_cache = *guard;
@@ -740,60 +728,37 @@ fn run_evaluation_training(
                     if let Some(v) = current_hot_cache.w_disorder_override {
                         effective_config.w_disorder = v;
                     }
-
                     local_env.set_config(effective_config);
                 }
 
-                // Epsilon cho Eval (thường nên để rất nhỏ hoặc 0)
-                let current_epsilon = current_hot_cache.eval_epsilon_override.unwrap_or(0.0); // Mặc định là 0 để test sức mạnh thật sự
-
-                // GAME LOOP
+                let current_epsilon = current_hot_cache.eval_epsilon_override.unwrap_or(0.0);
                 local_env.reset();
 
-                // Tracking replay variables
                 let mut current_steps = Vec::new();
-                let initial_board_state = {
-                    let mut arr = [[0u32; 4]; 4];
-                    for r in 0..4 {
-                        for c in 0..4 {
-                            arr[r][c] = local_env.game.board[r][c].value;
-                        }
-                    }
-                    arr
-                };
+                let initial_board_state =
+                    local_env.game.board.map(|row| row.map(|tile| tile.value));
 
                 let mut step_count = 0;
                 while !local_env.game.game_over {
                     step_count += 1;
                     if step_count > 20000 {
                         break;
-                    } // Tránh loop vô tận nếu game lỗi
-
-                    // 1. CHỌN ACTION (Dùng local_brain_ref)
-                    // Lưu ý: Các hàm get_best_action... cần nhận &NTupleNetwork (không phải mut)
-                    // Nếu thư viện của bạn yêu cầu &mut thì cần sửa thư viện hoặc dùng UnsafeCell.
-                    // Giả sử các hàm get_best_action chỉ cần đọc (read-only):
+                    }
 
                     let action = if current_epsilon > 0.0 && rng.random_bool(current_epsilon.into())
                     {
                         local_env.get_random_valid_action()
                     } else {
-                        // Logic chọn Policy đúng đắn
-                        // Vì shared_brain là Arc, ta deref nó bằng *local_brain_ref
-                        // Cần ép kiểu về mutable pointer nếu hàm thư viện yêu cầu mut (dù ta không sửa)
-                        // Hack: Để tương thích với hàm cũ yêu cầu &mut, ta dùng unsafe cast
-                        // NHƯNG VÌ ĐÂY LÀ EVAL, TA KHÔNG GỌI TRAIN_STEP NÊN KHÔNG SỢ DATA RACE
+                        // Fix cứng dùng Expectimax để Eval theo ý Huy
                         #[allow(mutable_transmutes)]
                         let brain_ptr_mut = unsafe {
                             std::mem::transmute::<&NTupleNetwork, &mut NTupleNetwork>(
                                 &*local_brain_ref,
                             )
                         };
-
                         local_env.get_best_action_expectimax(brain_ptr_mut)
                     };
 
-                    // convert action to action_dir
                     let action_dir = match action {
                         0 => Direction::Up,
                         1 => Direction::Down,
@@ -802,73 +767,68 @@ fn run_evaluation_training(
                         _ => unreachable!(),
                     };
 
-                    // 2. THỰC HIỆN NƯỚC ĐI (QUAN TRỌNG: Thay thế train_step)
-                    let _ = local_env.game.move_dir(action_dir);
+                    let (moved, _) = local_env.game.move_dir(action_dir);
+                    if !moved {
+                        break;
+                    }
 
-                    // (Không gọi train_step ở đây vì đang Evaluate)
-
-                    // Record Step (cho Replay)
-                    // Logic record giữ nguyên...
-                    if local_best_replay.is_none() || local_env.game.score > 5000.0 {
-                        // Chỉ record nếu điểm cao để tối ưu
-                        let board_snap = {
-                            let mut arr = [[0u32; 4]; 4];
-                            for r in 0..4 {
-                                for c in 0..4 {
-                                    arr[r][c] = local_env.game.board[r][c].value;
-                                }
-                            }
-                            arr
-                        };
+                    // Chỉ record replay cho ván xuất sắc để tiết kiệm RAM
+                    if local_env.game.score > 10000.0 {
                         current_steps.push(StepData {
                             direction: action as usize,
-                            board: board_snap,
+                            board: local_env.game.board.map(|row| row.map(|tile| tile.value)),
                             score: local_env.game.score,
                         });
                     }
                 }
 
                 let game_score = local_env.game.score as f64;
-                local_scores.push(game_score);
+                local_results.push((game_score, step_count));
 
-                // Update Replay
                 if game_score > local_max_score {
                     local_max_score = game_score;
                     local_best_replay = Some(GameReplay {
                         score: game_score,
                         max_tile: local_env.game.get_highest_tile_value(),
                         initial_board: initial_board_state,
-                        steps: current_steps, // Lưu ý: steps có thể bị thiếu nếu tối ưu ở trên
+                        steps: current_steps,
                     });
-                }
-
-                // Log progress
-                if t_id == 0 && local_ep % 1000 == 0 {
-                    print!(
-                        "\r   Eval: {:>6}/{} | Last: {:>5.0} | Policy: {:?}   ",
-                        local_ep * num_threads,
-                        total_games,
-                        game_score,
-                        policy
-                    );
-                    use std::io::Write;
-                    std::io::stdout().flush().unwrap();
                 }
             }
 
-            (local_scores, local_best_replay)
+            (local_results, local_best_replay)
         })
         .collect();
 
-    println!();
+    // --- XỬ LÝ SỐ LIỆU ---
+    let mut all_data: Vec<(f64, usize)> = results.iter().flat_map(|(res, _)| res.clone()).collect();
 
-    // --- TỔNG HỢP KẾT QUẢ ---
-    let all_scores: Vec<f64> = results.iter().map(|(s, _)| s).flatten().cloned().collect();
-    let avg = all_scores.iter().sum::<f64>() / all_scores.len() as f64;
-    let max = all_scores.iter().fold(0.0f64, |a, &b| a.max(b));
+    // Tìm Max và Avg tổng quát
+    let max = all_data.iter().map(|x| x.0).fold(0.0, f64::max);
+    let avg = all_data.iter().map(|x| x.0).sum::<f64>() / all_data.len() as f64;
 
-    // Tìm replay tốt nhất
-    let mut global_best_replay: Option<GameReplay> = None;
+    // --- XỬ LÝ SỐ LIỆU ---
+    let all_data: Vec<(f64, usize)> = results.iter().flat_map(|(res, _)| res.clone()).collect();
+
+    // 1. Tính toán tổng quát
+    let max = all_data.iter().map(|x| x.0).fold(0.0, f64::max);
+    let avg = all_data.iter().map(|x| x.0).sum::<f64>() / all_data.len() as f64;
+
+    // 2. Tìm ván tệ nhất (Worst Game) dựa trên Score
+    if let Some(worst_game) = all_data
+        .iter()
+        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+    {
+        println!();
+        println!("   📉 Worst Game Analytics (Single lowest score):");
+        println!("      >> Score: {:.1}", worst_game.0);
+        println!("      >> Moves: {} steps", worst_game.1);
+
+        // Gợi ý: Nếu Huy thấy Score tệ nhưng Moves lại cao, nghĩa là AI bị "vờn" lâu nhưng không merge được.
+        // Nếu cả Score và Moves đều thấp (ví dụ < 50 steps), AI đang gặp lỗi chọn nước đi chết người.
+    }
+
+    let mut global_best_replay = None;
     let mut global_max_score = 0.0;
     for (_, replay_opt) in results {
         if let Some(replay) = replay_opt {
@@ -879,23 +839,6 @@ fn run_evaluation_training(
         }
     }
 
-    // Bottom 10% stats
-    let mut sorted_scores = all_scores.clone();
-    sorted_scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let bot10_count = (sorted_scores.len() as f64 * 0.1).ceil() as usize;
-    let bot10_avg: f64 = if bot10_count > 0 {
-        sorted_scores.iter().take(bot10_count).sum::<f64>() / bot10_count as f64
-    } else {
-        0.0
-    };
-
-    println!(
-        "   📉 Bottom 10% Avg: {:.2} ({} games)",
-        bot10_avg, bot10_count
-    );
-
-    // Lấy lại brain từ Arc (unwrap vì chỉ có 1 reference owner lúc này)
-    // Nếu không unwrap được (do còn thread nào giữ) thì clone ra.
     let final_brain = match Arc::try_unwrap(shared_brain) {
         Ok(b) => b,
         Err(arc_b) => (*arc_b).clone(),
