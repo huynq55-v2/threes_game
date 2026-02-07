@@ -1,7 +1,7 @@
+use crate::deck_tracker::DeckTracker;
 use crate::game::{Direction, Game};
 use crate::n_tuple_network::NTupleNetwork;
 use crate::pbt::TrainingConfig;
-use crate::potential_calculate::get_composite_potential;
 use rand::Rng as _;
 
 pub struct ThreesEnv {
@@ -14,6 +14,8 @@ pub struct ThreesEnv {
     pub traces: Vec<Vec<f64>>,
     pub active_trace_indices: Vec<Vec<usize>>,
 }
+
+const SEARCH_DEPTH: u32 = 3;
 
 impl ThreesEnv {
     pub fn new(gamma: f64) -> Self {
@@ -195,6 +197,185 @@ impl ThreesEnv {
             }
         }
         best_action
+    }
+
+    pub fn get_best_action_expectimax_depth2(&self, brain: &NTupleNetwork) -> u32 {
+        let mut best_val = f64::NEG_INFINITY;
+        let mut best_action = 0;
+
+        // --- PLY 1: MAX NODE (AI chọn hướng đi hiện tại) ---
+        for action in 0..4 {
+            let dir = match action {
+                0 => Direction::Up,
+                1 => Direction::Down,
+                2 => Direction::Left,
+                3 => Direction::Right,
+                _ => continue,
+            };
+
+            // Lấy tất cả các kịch bản gạch mọc có thể xảy ra từ hướng đi này
+            // Hàm này của Huy đã xử lý: Trượt -> Lấy Hint -> Nhân chéo Vị trí x Giá trị
+            let outcomes = self.game.get_all_possible_outcomes(dir);
+
+            if !outcomes.is_empty() {
+                let mut expected_value_ply1 = 0.0;
+
+                // Duyệt qua từng kịch bản gạch mọc (Xác suất chia đều như Huy nói)
+                for outcome_game in &outcomes {
+                    // --- PLY 2: MAX NODE (AI tìm phản xạ tốt nhất từ kịch bản đó - DEPTH 2) ---
+                    // Thay vì chấm điểm tĩnh, ta dùng logic Afterstate để tìm nước đi "thoát hiểm" nhất
+                    let best_future_score =
+                        self.get_max_afterstate_score_from_game(outcome_game, brain);
+
+                    expected_value_ply1 += best_future_score;
+                }
+
+                // Tính trung bình cộng xác suất (Huy: 100% cho 1,2,3 hoặc 33% cho Bonus)
+                expected_value_ply1 /= outcomes.len() as f64;
+
+                if expected_value_ply1 > best_val {
+                    best_val = expected_value_ply1;
+                    best_action = action;
+                }
+            }
+        }
+        best_action as u32
+    }
+
+    pub fn get_best_action_recursive(&self, brain: &NTupleNetwork) -> u32 {
+        let mut best_val = -f64::MAX;
+        let mut best_action = 0;
+
+        // PLY 1: AI chọn nước đi đầu tiên
+        for action in 0..4 {
+            let dir = match action {
+                0 => Direction::Up,
+                1 => Direction::Down,
+                2 => Direction::Left,
+                3 => Direction::Right,
+                _ => continue,
+            };
+
+            // Lấy danh sách các kịch bản gạch mọc (Chance Node 1)
+            // (Hàm này của Huy đã tự update tracker và hint rồi)
+            let outcomes = self.game.get_all_possible_outcomes(dir);
+
+            if !outcomes.is_empty() {
+                let mut expected_value = 0.0;
+
+                // Tính giá trị trung bình của các kịch bản
+                for outcome_game in &outcomes {
+                    // Gọi đệ quy xuống các tầng sâu hơn
+                    // depth = SEARCH_DEPTH - 1 vì ta đã đi xong nước đầu tiên
+                    expected_value += self.expectimax_node(outcome_game, SEARCH_DEPTH - 1, brain);
+                }
+
+                expected_value /= outcomes.len() as f64;
+
+                if expected_value > best_val {
+                    best_val = expected_value;
+                    best_action = action;
+                }
+            }
+        }
+
+        // Fallback: Nếu không đường nào đi được (best_action vẫn = 0 và val âm vô cùng)
+        // thì cứ trả về 0, game sẽ tự xử lý Game Over sau.
+        best_action as u32
+    }
+
+    /// Hàm đệ quy xử lý các tầng tiếp theo
+    /// Input: game state đã mọc gạch xong (đang chờ AI đi nước tiếp theo)
+    fn expectimax_node(&self, game: &Game, depth: u32, brain: &NTupleNetwork) -> f64 {
+        // BASE CASE: Nếu đã chạm đáy độ sâu
+        // Ta dùng Afterstate (nhìn thêm 1 bước đệm) để đánh giá lá chắn cuối cùng
+        if depth == 0 {
+            return self.get_max_afterstate_score_from_game(game, brain);
+        }
+
+        let mut max_val = -f64::MAX;
+        let mut can_move = false;
+
+        // MAX NODE: AI chọn nước đi tốt nhất tại tầng này
+        for action in 0..4 {
+            let dir = match action {
+                0 => Direction::Up,
+                1 => Direction::Down,
+                2 => Direction::Left,
+                3 => Direction::Right,
+                _ => continue,
+            };
+
+            // CHANCE NODE: Sinh ra các kịch bản gạch mọc tiếp theo
+            let outcomes = game.get_all_possible_outcomes(dir);
+
+            if !outcomes.is_empty() {
+                can_move = true;
+                let mut current_dir_expected_val = 0.0;
+
+                for outcome_game in &outcomes {
+                    // ĐỆ QUY TIẾP: Xuống tầng sâu hơn (depth - 1)
+                    current_dir_expected_val +=
+                        self.expectimax_node(outcome_game, depth - 1, brain);
+                }
+
+                // Tính trung bình (Average)
+                current_dir_expected_val /= outcomes.len() as f64;
+
+                // Maximize: AI sẽ chọn hướng có kỳ vọng cao nhất
+                if current_dir_expected_val > max_val {
+                    max_val = current_dir_expected_val;
+                }
+            }
+        }
+
+        // Nếu tại tầng này không đi được đâu nữa -> Game Over -> Điểm 0
+        if !can_move {
+            return 0.0;
+        }
+
+        max_val
+    }
+
+    fn get_max_afterstate_score_from_game(&self, game: &Game, brain: &NTupleNetwork) -> f64 {
+        let mut max_val = f64::NEG_INFINITY;
+        let mut can_move_any = false;
+
+        // Thử 4 hướng phản xạ tiếp theo
+        for action in 0..4 {
+            let dir = match action {
+                0 => Direction::Up,
+                1 => Direction::Down,
+                2 => Direction::Left,
+                3 => Direction::Right,
+                _ => continue,
+            };
+
+            // SỬ DỤNG TRỰC TIẾP HÀM CỦA HUY TẠI ĐÂY
+            if let Some(after_board) = game.get_afterstate(dir) {
+                can_move_any = true;
+
+                // Chuyển board sang dạng phẳng để N-Tuple predict
+                let mut flat = [0u32; 16];
+                for r in 0..4 {
+                    for c in 0..4 {
+                        flat[r * 4 + c] = after_board[r][c].value;
+                    }
+                }
+
+                let score = brain.predict(&flat);
+                if score > max_val {
+                    max_val = score;
+                }
+            }
+        }
+
+        // Nếu bước tiếp theo không đi được hướng nào (Game Over giả lập)
+        if !can_move_any {
+            return 0.0; // Phạt nặng vì nước đi trước đó dẫn đến ngõ cụt
+        }
+
+        max_val
     }
 
     pub fn get_best_action_afterstate(&self, brain: &NTupleNetwork) -> u32 {

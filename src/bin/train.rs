@@ -758,7 +758,7 @@ fn run_evaluation_training(
                                 &*local_brain_ref,
                             )
                         };
-                        local_env.get_best_action_safe(brain_ptr_mut)
+                        local_env.get_best_action_recursive(brain_ptr_mut)
                     };
 
                     let action_dir = match action {

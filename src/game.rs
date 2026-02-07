@@ -1,3 +1,4 @@
+use crate::deck_tracker::DeckTracker;
 use crate::pseudo_list::PseudoList;
 use crate::threes_const::*;
 use crate::tile::Tile;
@@ -24,6 +25,7 @@ pub struct Game {
     pub special: PseudoList<u32>,
     pub future_value: u32,
     pub hints: Vec<u32>,
+    pub deck_tracker: DeckTracker,
 }
 
 impl Game {
@@ -79,6 +81,7 @@ impl Game {
             special,
             future_value,
             hints,
+            deck_tracker: DeckTracker::new(),
         };
 
         // calculate score
@@ -349,6 +352,7 @@ impl Game {
                     
                     // Spawn cố định vào kịch bản này
                     possible_game.spawn_at(row_idx, 3, val);
+                    possible_game.deck_tracker.update(val);
 
                     // Cập nhật trạng thái như một bước đi thật
                     possible_game.num_move += 1;
@@ -579,6 +583,7 @@ impl Game {
             special,
             future_value,
             hints,
+            deck_tracker: DeckTracker::new(),
         };
 
         game.future_value = game.get_next_value();

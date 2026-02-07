@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 
 pub mod adaptive_manager;
+pub mod deck_tracker;
 pub mod game;
 pub mod hotload_config;
 pub mod n_tuple_network;
