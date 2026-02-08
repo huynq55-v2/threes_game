@@ -118,12 +118,34 @@ impl ThreesEnv {
     }
 
     pub fn get_random_valid_action(&self) -> u32 {
-        let mut rng = rand::rng();
-        let mut action = rng.random_range(0..4);
-        while !self.valid_moves()[action] {
-            action = rng.random_range(0..4);
+        let mut valid_actions = Vec::new();
+
+        // 1. Duyệt qua 4 hướng để thu thập các hướng đi được
+        for action in 0..4 {
+            let dir = match action {
+                0 => Direction::Up,
+                1 => Direction::Down,
+                2 => Direction::Left,
+                3 => Direction::Right,
+                _ => continue,
+            };
+
+            // Dùng hàm can_move mà chúng ta đã thống nhất để kiểm tra
+            if self.game.can_move(dir) {
+                valid_actions.push(action);
+            }
         }
-        action as u32
+
+        // 2. Nếu danh sách trống -> Hết đường đi
+        if valid_actions.is_empty() {
+            return 100; // Sentinel value báo hiệu Game Over
+        }
+
+        // 3. Chọn ngẫu nhiên một action trong danh sách hợp lệ
+        let mut rng = rand::rng();
+        // Dùng choose để bốc một phần tử ngẫu nhiên (An toàn hơn loop random)
+        use rand::prelude::IndexedRandom;
+        *valid_actions.choose(&mut rng).unwrap() as u32
     }
 
     pub fn get_best_action_safe(&self, brain: &NTupleNetwork) -> u32 {
@@ -433,28 +455,30 @@ impl ThreesEnv {
                 _ => continue,
             };
 
-            // PRUNING 1: Nếu không đi được, bỏ qua ngay
+            // PRUNING: Nếu không đi được, bỏ qua ngay
             if !self.game.can_move(dir) {
                 continue;
             }
 
-            found_valid_move = true;
-
             // BƯỚC QUAN TRỌNG:
-            // Sau khi mình đi (Max), đến lượt Game thả quân (Chance).
-            // Ta truyền `depth` vào. Logic giảm depth sẽ nằm bên trong.
             let val = self.search_chance_node(&self.game, dir, depth, brain);
 
-            if val > best_val {
+            // --- SỬA Ở ĐÂY ---
+            // Logic cũ: if val > best_val { ... } -> SAI nếu val = -inf
+            // Logic mới: Nếu đây là nước đi hợp lệ đầu tiên tìm thấy -> LẤY LUÔN
+            // Hoặc nếu điểm cao hơn điểm cũ -> LẤY
+            if !found_valid_move || val > best_val {
                 best_val = val;
                 best_action = action;
+                found_valid_move = true; // Đánh dấu là đã có ít nhất 1 nước đi
             }
         }
 
-        // Xử lý Game Over ngay tại gốc
+        // Xử lý Game Over
         if !found_valid_move {
-            // Trả về 0 và điểm phạt (điểm hiện tại của bàn cờ chết)
-            return (0, brain.predict_game(&self.game));
+            // Trả về 0 và điểm phạt.
+            // LƯU Ý: Bên ngoài gọi hàm này phải check game over trước hoặc xử lý điểm phạt này
+            return (100, brain.predict_game(&self.game));
         }
 
         (best_action as u32, best_val)

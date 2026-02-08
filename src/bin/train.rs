@@ -322,13 +322,7 @@ fn main() {
 
                     local_env.reset();
                     // local_brain.reset_traces(); // Removed: Traces now managed by env
-                    let mut step_count = 0;
                     while !local_env.game.game_over {
-                        step_count += 1;
-                        if step_count > 20000 {
-                            break;
-                        }
-
                         let action = if rng.random_bool(current_epsilon.into()) {
                             local_env.get_random_valid_action()
                         } else {
@@ -345,6 +339,10 @@ fn main() {
                                 }
                             }
                         };
+
+                        if action == 100 {
+                            break;
+                        }
 
                         local_env.train_step(&mut local_brain, action, current_alpha, ply);
                     }
