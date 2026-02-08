@@ -302,6 +302,45 @@ impl Game {
         (moved, merged_ranks)
     }
 
+    pub fn simulate_move(&self, dir: Direction) -> Vec<[[u32; 4]; 4]> {
+        let mut possible_boards = Vec::new();
+        let mut temp_game = self.clone();
+        
+        if !temp_game.can_move(dir) {
+            return vec![temp_game.get_board_values()];
+        }
+
+        let rot = temp_game.get_rotations_needed(dir);
+        temp_game.rotate_board(rot);
+        let (_, moved_rows, _) = temp_game.shift_board_left();
+
+        // SỬ DỤNG CHÍNH HÀM CỦA HUY ĐỂ LẤY SET
+        let hints = self.predict_future(); 
+
+        for &row_idx in &moved_rows {
+            for &val in &hints { // Duyệt qua tất cả các con số có thể mọc (6, 12...)
+                let mut board_variant = temp_game.clone();
+                board_variant.board[row_idx][3].value = val; 
+                
+                board_variant.rotate_board(4 - rot);
+                possible_boards.push(board_variant.get_board_values());
+            }
+        }
+
+        possible_boards
+    }
+
+    // Hàm phụ hỗ trợ lấy mảng u32 đơn thuần để so sánh
+    fn get_board_values(&self) -> [[u32; 4]; 4] {
+        let mut values = [[0u32; 4]; 4];
+        for y in 0..4 {
+            for x in 0..4 {
+                values[y][x] = self.board[y][x].value;
+            }
+        }
+        values
+    }
+
     /// Hàm mới: Trả về bàn cờ SAU khi đi, nhưng TRƯỚC khi spawn số mới
     pub fn get_afterstate(&self, dir: Direction) -> Option<[[Tile; 4]; 4]> {
         if !self.can_move(dir) {
@@ -415,7 +454,7 @@ impl Game {
     // --- 3. CÁC HÀM XỬ LÝ LOGIC CỐT LÕI (CORE LOGIC) ---
 
     /// Duyệt từng hàng, xử lý dồn sang trái
-    fn shift_board_left(&mut self) -> (bool, Vec<usize>, Vec<u8>) {
+    pub fn shift_board_left(&mut self) -> (bool, Vec<usize>, Vec<u8>) {
         let mut moved_rows = Vec::new();
         let mut merged_ranks = Vec::new(); // <--- Danh sách thu hoạch
 
@@ -512,7 +551,7 @@ impl Game {
     }
 
     // Helper: Lấy số lần xoay cần thiết
-    fn get_rotations_needed(&self, dir: Direction) -> u8 {
+    pub fn get_rotations_needed(&self, dir: Direction) -> u8 {
         match dir {
             Direction::Left => 0,
             Direction::Down => 1,
@@ -522,7 +561,7 @@ impl Game {
     }
 
     // Helper: Xoay board k lần 90 độ
-    fn rotate_board(&mut self, times: u8) {
+    pub fn rotate_board(&mut self, times: u8) {
         let k = times % 4;
         if k == 0 { return; }
         

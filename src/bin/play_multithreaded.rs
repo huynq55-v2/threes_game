@@ -68,7 +68,7 @@ fn main() {
                 // Epsilon greedy (e=0 -> always best)
                 // We use 0.0 directly as requested
 
-                let action = env.get_best_action_recursive(&brain_ref);
+                let action = env.get_best_action_ply(&brain_ref, 5).0;
 
                 let (moved, _) = env.game.move_dir(match action {
                     0 => Direction::Up,
