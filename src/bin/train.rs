@@ -333,7 +333,7 @@ fn main() {
                                     local_env.get_best_action_safe(&mut local_brain)
                                 }
                                 TrainingPolicy::Afterstate => {
-                                    local_env.get_best_action_ply(&mut local_brain, 2).0
+                                    local_env.get_best_action_ply(&mut local_brain, 3).0
                                     // 3 ply
                                 }
                             }

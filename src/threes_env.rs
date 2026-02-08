@@ -440,12 +440,13 @@ impl ThreesEnv {
 
     /// Hàm Wrapper: Gọi từ bên ngoài với số Ply mong muốn
     /// Ví dụ: ply = 1 (chỉ trượt), ply = 4 (trượt-mọc-trượt-mọc)
+    // Hàm gọi từ bên ngoài (Root)
+    // --- MAIN SEARCH FUNCTION ---
     pub fn get_best_action_ply(&self, brain: &NTupleNetwork, depth: u32) -> (u32, f64) {
         let mut best_val = f64::NEG_INFINITY;
         let mut best_action = 0;
-        let mut found_valid_move = false;
+        let mut found_move = false;
 
-        // Duyệt 4 hướng (Up, Down, Left, Right)
         for action in 0..4 {
             let dir = match action {
                 0 => Direction::Up,
@@ -455,98 +456,91 @@ impl ThreesEnv {
                 _ => continue,
             };
 
-            // PRUNING: Nếu không đi được, bỏ qua ngay
             if !self.game.can_move(dir) {
                 continue;
             }
 
-            // BƯỚC QUAN TRỌNG:
-            let val = self.search_chance_node(&self.game, dir, depth, brain);
+            // 1. TẠO AFTER STATE
+            // get_afterstate trả về raw board [[Tile; 4]; 4], cần wrap vào struct Game
+            let after_board = self.game.get_afterstate(dir).unwrap();
 
-            // --- SỬA Ở ĐÂY ---
-            // Logic cũ: if val > best_val { ... } -> SAI nếu val = -inf
-            // Logic mới: Nếu đây là nước đi hợp lệ đầu tiên tìm thấy -> LẤY LUÔN
-            // Hoặc nếu điểm cao hơn điểm cũ -> LẤY
-            if !found_valid_move || val > best_val {
+            // FIX ERROR 1: Tạo một Game struct tạm thời từ raw board
+            // Clone game hiện tại để giữ các thông tin phụ (deck, score...) nếu cần
+            let mut after_game = self.game.clone();
+            after_game.board = after_board;
+
+            // 2. XỬ LÝ DỰA TRÊN DEPTH (PLY)
+            let val;
+            if depth == 1 {
+                // CASE PLY LẺ (1): Dừng ngay tại After State
+                // FIX ERROR: Truyền &Game vào predict
+                val = brain.predict_game(&after_game);
+            } else {
+                // CASE PLY > 1: Tiếp tục đi xuống lớp Spawn
+                // FIX ERROR: Truyền &Game và thêm 'dir' vào hàm search_spawn
+                val = self.search_spawn_node(&after_game, dir, depth - 1, brain);
+            }
+
+            if val > best_val {
                 best_val = val;
                 best_action = action;
-                found_valid_move = true; // Đánh dấu là đã có ít nhất 1 nước đi
+                found_move = true;
             }
         }
 
-        // Xử lý Game Over
-        if !found_valid_move {
-            // Trả về 0 và điểm phạt.
-            // LƯU Ý: Bên ngoài gọi hàm này phải check game over trước hoặc xử lý điểm phạt này
-            return (100, brain.predict_game(&self.game));
+        if !found_move {
+            return (0, -1_000_000.0);
         }
 
         (best_action as u32, best_val)
     }
 
-    fn search_chance_node(
+    // --- SPAWN NODE (Sinh quân ngẫu nhiên) ---
+    // FIX SIGNATURE: Thêm tham số `dir: Direction` để biết hướng vừa đi
+    fn search_spawn_node(
         &self,
-        game: &Game,
+        after_state: &Game,
         dir: Direction,
         depth: u32,
         brain: &NTupleNetwork,
     ) -> f64 {
-        // --- ĐIỂM DỪNG (LEAF NODE) ---
-        // Nếu depth = 1, ta chỉ đánh giá Afterstate (Bàn cờ vừa trượt xong, chưa mọc quân)
-        // Đây là kỹ thuật tối ưu tốc độ (nhìn ngắn 1 bước).
-        if depth == 1 {
-            // Vì root đã check can_move, hàm này CHẮC CHẮN trả về Some.
-            // Dùng expect để khẳng định tính đúng đắn của logic.
-            let after_board = game
-                .get_afterstate(dir)
-                .expect("🔥 BUG Logic: Root check can_move OK nhưng get_afterstate trả None");
-
-            let mut flat = [0u32; 16];
-            for i in 0..16 {
-                flat[i] = after_board[i / 4][i % 4].value;
-            }
-            return brain.predict(&flat);
-        }
-
-        // --- SINH QUÂN (SPAWN) ---
-        // Sinh ra các outcomes (Bàn cờ đã mọc quân mới)
-        let outcomes = game.get_all_possible_outcomes_pure(dir);
+        // FIX ERROR 3: Dùng hàm có sẵn get_all_possible_outcomes_pure(dir)
+        let mut outcomes = after_state.get_all_possible_outcomes_pure(dir);
 
         if outcomes.is_empty() {
-            // Nếu không sinh được outcome nào dù can_move = true => Lỗi logic game nghiêm trọng
-            unreachable!("🔥 BUG Logic: Move valid nhưng không sinh được outcome nào!");
+            return -1_000_000.0;
         }
 
-        // --- TÍNH TRUNG BÌNH (AVERAGE) ---
         let mut total_score = 0.0;
-        let prob = 1.0 / outcomes.len() as f64; // Giả sử xác suất đều
+        let prob = 1.0 / outcomes.len() as f64;
 
-        for outcome_game in &outcomes {
-            if depth == 2 {
-                // Nếu còn 2 ply (Move + Spawn), đây là tầng cuối cùng.
-                // Đánh giá trực tiếp Game State sau khi mọc quân.
-                total_score += prob * brain.predict_game(outcome_game);
+        // SỬA: &outcomes -> &mut outcomes
+        for outcome_game in &mut outcomes {
+            let val;
+
+            // Bây giờ gọi hàm mutable check_game_over() thoải mái
+            if outcome_game.check_game_over() {
+                // Giả sử hàm này tên là check_game_over hay is_game_over
+                val = -1_000_000.0;
             } else {
-                // Nếu depth > 2, tiếp tục gọi đệ quy sang lượt người chơi (Max Node)
-                // Giảm depth đi 2 (tương ứng với 1 cặp Move + Spawn đã hoàn thành)
-                let val = self.search_max_node(outcome_game, depth - 2, brain);
-                total_score += prob * val;
+                // ... code logic cũ ...
+                if depth == 1 {
+                    val = brain.predict_game(outcome_game);
+                } else {
+                    val = self.search_move_node(outcome_game, depth - 1, brain);
+                }
             }
+            total_score += val * prob;
         }
 
         total_score
     }
 
-    fn search_max_node(&self, game: &Game, depth: u32, brain: &NTupleNetwork) -> f64 {
-        // Điều kiện dừng đệ quy (thường không chạy vào đây nếu logic trên chuẩn, nhưng cứ để an toàn)
-        if depth == 0 {
-            return brain.predict_game(game);
-        }
-
+    // --- MOVE NODE (Đệ quy cho depth sâu) ---
+    fn search_move_node(&self, game: &Game, depth: u32, brain: &NTupleNetwork) -> f64 {
         let mut best_val = f64::NEG_INFINITY;
-        let mut can_move_any = false;
+        let mut can_move = false;
 
-        // Duyệt 4 hướng
         for action in 0..4 {
             let dir = match action {
                 0 => Direction::Up,
@@ -556,11 +550,22 @@ impl ThreesEnv {
                 _ => continue,
             };
 
-            // PRUNING: Cắt nhánh cụt
             if game.can_move(dir) {
-                can_move_any = true;
-                // Gọi quay lại Chance Node để xử lý tiếp
-                let val = self.search_chance_node(game, dir, depth, brain);
+                can_move = true;
+
+                // Tương tự: Wrap raw board vào Game struct
+                let after_board = game.get_afterstate(dir).unwrap();
+                let mut after_game = game.clone();
+                after_game.board = after_board;
+
+                let val;
+                if depth == 1 {
+                    // Dừng ở Move (After State)
+                    val = brain.predict_game(&after_game);
+                } else {
+                    // Xuống Spawn, truyền kèm dir
+                    val = self.search_spawn_node(&after_game, dir, depth - 1, brain);
+                }
 
                 if val > best_val {
                     best_val = val;
@@ -568,11 +573,8 @@ impl ThreesEnv {
             }
         }
 
-        // XỬ LÝ DEAD END (GAME OVER)
-        if !can_move_any {
-            // Nếu không đi được hướng nào, trả về điểm phạt.
-            // Điểm phạt chính là điểm đánh giá của bàn cờ chết này (thường thấp).
-            return brain.predict_game(game);
+        if !can_move {
+            return -1_000_000.0;
         }
 
         best_val
