@@ -56,21 +56,9 @@ async fn main() -> std::io::Result<()> {
                     }
 
                     // --- BƯỚC 2: TÍNH TOÁN NƯỚC ĐI TIẾP THEO ---
-                    let mut env = ThreesEnv::new(1.0);
+                    let mut env = ThreesEnv::new(0.995);
                     sync_board(&mut env.game, map_1d_to_2d(&board_1d));
                     env.game.future_value = next_tile;
-
-                    // --- CHÈN VÀO ĐÂY ĐỂ DEBUG ---
-                    // Giả sử bạn muốn check hướng UP (action 0)
-                    let mut temp_game = env.game.clone();
-                    let rot = temp_game.get_rotations_needed(Direction::Up);
-                    temp_game.rotate_board(rot);
-                    let (_, moved_rows, _) = temp_game.shift_board_left();
-
-                    println!(
-                        "🔍 Debug Move UP: Hàng di chuyển theo Simulator: {:?}",
-                        moved_rows
-                    );
 
                     let (action, _value) = env.get_best_action_ply(&shared_brain, 7);
                     let dir = match action {

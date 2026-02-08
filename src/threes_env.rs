@@ -418,10 +418,12 @@ impl ThreesEnv {
 
     /// Hàm Wrapper: Gọi từ bên ngoài với số Ply mong muốn
     /// Ví dụ: ply = 1 (chỉ trượt), ply = 4 (trượt-mọc-trượt-mọc)
-    pub fn get_best_action_ply(&self, brain: &NTupleNetwork, target_ply: u32) -> (u32, f64) {
+    pub fn get_best_action_ply(&self, brain: &NTupleNetwork, depth: u32) -> (u32, f64) {
         let mut best_val = f64::NEG_INFINITY;
         let mut best_action = 0;
+        let mut found_valid_move = false;
 
+        // Duyệt 4 hướng (Up, Down, Left, Right)
         for action in 0..4 {
             let dir = match action {
                 0 => Direction::Up,
@@ -431,102 +433,125 @@ impl ThreesEnv {
                 _ => continue,
             };
 
-            // Gọi đệ quy tính điểm
-            let val = self.calculate_score_ply(&self.game, dir, target_ply, brain);
+            // PRUNING 1: Nếu không đi được, bỏ qua ngay
+            if !self.game.can_move(dir) {
+                continue;
+            }
+
+            found_valid_move = true;
+
+            // BƯỚC QUAN TRỌNG:
+            // Sau khi mình đi (Max), đến lượt Game thả quân (Chance).
+            // Ta truyền `depth` vào. Logic giảm depth sẽ nằm bên trong.
+            let val = self.search_chance_node(&self.game, dir, depth, brain);
 
             if val > best_val {
                 best_val = val;
                 best_action = action;
             }
         }
+
+        // Xử lý Game Over ngay tại gốc
+        if !found_valid_move {
+            // Trả về 0 và điểm phạt (điểm hiện tại của bàn cờ chết)
+            return (0, brain.predict_game(&self.game));
+        }
+
         (best_action as u32, best_val)
     }
 
-    fn calculate_score_ply(
+    fn search_chance_node(
         &self,
         game: &Game,
         dir: Direction,
-        ply: u32,
+        depth: u32,
         brain: &NTupleNetwork,
     ) -> f64 {
-        // --- TRƯỜNG HỢP 1: PLY = 1 (Chỉ Move -> Afterstate -> Eval) ---
-        // Đây là điểm dừng cho các Ply lẻ (1, 3, 5...)
-        if ply == 1 {
-            if let Some(after_board) = game.get_afterstate(dir) {
-                // Đánh giá ngay Afterstate này bằng NN
-                let mut flat = [0u32; 16];
-                for r in 0..4 {
-                    for c in 0..4 {
-                        flat[r * 4 + c] = after_board[r][c].value;
-                    }
-                }
-                return brain.predict(&flat);
-            } else {
-                return 0.0; // Không đi được -> 0 điểm
+        // --- ĐIỂM DỪNG (LEAF NODE) ---
+        // Nếu depth = 1, ta chỉ đánh giá Afterstate (Bàn cờ vừa trượt xong, chưa mọc quân)
+        // Đây là kỹ thuật tối ưu tốc độ (nhìn ngắn 1 bước).
+        if depth == 1 {
+            // Vì root đã check can_move, hàm này CHẮC CHẮN trả về Some.
+            // Dùng expect để khẳng định tính đúng đắn của logic.
+            let after_board = game
+                .get_afterstate(dir)
+                .expect("🔥 BUG Logic: Root check can_move OK nhưng get_afterstate trả None");
+
+            let mut flat = [0u32; 16];
+            for i in 0..16 {
+                flat[i] = after_board[i / 4][i % 4].value;
             }
+            return brain.predict(&flat);
         }
 
-        // --- TRƯỜNG HỢP 2: PLY >= 2 (Move + Spawn -> Game State) ---
-        // Ta dùng get_all_possible_outcomes để nhảy cóc 2 bước (Move + Spawn)
-        // Sau bước này, ply sẽ giảm đi 2
-
-        // Lưu ý: Hàm này đã bao gồm việc check can_move và logic spawn
+        // --- SINH QUÂN (SPAWN) ---
+        // Sinh ra các outcomes (Bàn cờ đã mọc quân mới)
         let outcomes = game.get_all_possible_outcomes_pure(dir);
 
         if outcomes.is_empty() {
-            return 0.0; // Kẹt đường
+            // Nếu không sinh được outcome nào dù can_move = true => Lỗi logic game nghiêm trọng
+            unreachable!("🔥 BUG Logic: Move valid nhưng không sinh được outcome nào!");
         }
 
-        // Nếu Ply = 2, nghĩa là sau khi Spawn xong là dừng -> Eval ngay Game State
-        if ply == 2 {
-            let mut total_val = 0.0;
-            for outcome_game in &outcomes {
-                // Đánh giá Game State (Board vừa mọc gạch xong)
-                total_val += brain.predict_game(outcome_game);
-            }
-            return total_val / outcomes.len() as f64;
-        }
-
-        // --- TRƯỜNG HỢP 3: PLY > 2 (Tiếp tục đệ quy) ---
-        // Hiện tại đã đi xong Move + Spawn (tốn 2 ply), ta còn (ply - 2)
-        let mut total_expected_val = 0.0;
+        // --- TÍNH TRUNG BÌNH (AVERAGE) ---
+        let mut total_score = 0.0;
+        let prob = 1.0 / outcomes.len() as f64; // Giả sử xác suất đều
 
         for outcome_game in &outcomes {
-            // Chance Node (Trung bình cộng):
-            // Tại game state mới này, AI lại tìm nước đi tốt nhất (Max Node)
-
-            let mut best_next_val = f64::NEG_INFINITY;
-            let mut can_move_next = false;
-
-            for next_action in 0..4 {
-                let next_dir = match next_action {
-                    0 => Direction::Up,
-                    1 => Direction::Down,
-                    2 => Direction::Left,
-                    3 => Direction::Right,
-                    _ => continue,
-                };
-
-                // Đệ quy tiếp với số ply giảm đi 2
-                let val = self.calculate_score_ply(outcome_game, next_dir, ply - 2, brain);
-
-                if val > best_next_val {
-                    best_next_val = val;
-                }
-                // Trick: Nếu val > 0 tức là nhánh đó sống
-                if val > 0.0 {
-                    can_move_next = true;
-                }
-            }
-
-            total_expected_val += if best_next_val == f64::NEG_INFINITY {
-                0.0
+            if depth == 2 {
+                // Nếu còn 2 ply (Move + Spawn), đây là tầng cuối cùng.
+                // Đánh giá trực tiếp Game State sau khi mọc quân.
+                total_score += prob * brain.predict_game(outcome_game);
             } else {
-                best_next_val
-            };
+                // Nếu depth > 2, tiếp tục gọi đệ quy sang lượt người chơi (Max Node)
+                // Giảm depth đi 2 (tương ứng với 1 cặp Move + Spawn đã hoàn thành)
+                let val = self.search_max_node(outcome_game, depth - 2, brain);
+                total_score += prob * val;
+            }
         }
 
-        total_expected_val / outcomes.len() as f64
+        total_score
+    }
+
+    fn search_max_node(&self, game: &Game, depth: u32, brain: &NTupleNetwork) -> f64 {
+        // Điều kiện dừng đệ quy (thường không chạy vào đây nếu logic trên chuẩn, nhưng cứ để an toàn)
+        if depth == 0 {
+            return brain.predict_game(game);
+        }
+
+        let mut best_val = f64::NEG_INFINITY;
+        let mut can_move_any = false;
+
+        // Duyệt 4 hướng
+        for action in 0..4 {
+            let dir = match action {
+                0 => Direction::Up,
+                1 => Direction::Down,
+                2 => Direction::Left,
+                3 => Direction::Right,
+                _ => continue,
+            };
+
+            // PRUNING: Cắt nhánh cụt
+            if game.can_move(dir) {
+                can_move_any = true;
+                // Gọi quay lại Chance Node để xử lý tiếp
+                let val = self.search_chance_node(game, dir, depth, brain);
+
+                if val > best_val {
+                    best_val = val;
+                }
+            }
+        }
+
+        // XỬ LÝ DEAD END (GAME OVER)
+        if !can_move_any {
+            // Nếu không đi được hướng nào, trả về điểm phạt.
+            // Điểm phạt chính là điểm đánh giá của bàn cờ chết này (thường thấp).
+            return brain.predict_game(game);
+        }
+
+        best_val
     }
 
     // pub fn get_best_action_afterstate(&self, brain: &NTupleNetwork) -> u32 {

@@ -738,6 +738,10 @@ async fn main() {
                         _ => Direction::Up,
                     };
 
+                    if !env.game.can_move(dir) {
+                        unreachable!("AI chose an invalid move");
+                    }
+
                     if env.game.can_move(dir) {
                         // 1. Calculate Transition Events
                         let mut transition = calculate_transition(&env.game, dir);
