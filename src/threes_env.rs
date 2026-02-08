@@ -689,32 +689,16 @@ impl ThreesEnv {
     //     total_expected_val / move_count as f64
     // }
 
-    pub fn train_step(
-        &mut self,
-        brain: &mut NTupleNetwork,
-        action: u32,
-        alpha: f64,
-        ply: u32,
-    ) -> (f64, f64) {
-        // 1. Tính trạng thái Afterstate (S_after)
-        let dir = match action {
-            0 => Direction::Up,
-            1 => Direction::Down,
-            2 => Direction::Left,
-            3 => Direction::Right,
-            _ => unreachable!(),
+    pub fn train_step(&mut self, brain: &mut NTupleNetwork, action: u32, alpha: f64) -> (f64, f64) {
+        // 1. Lấy Afterstate hiện tại (S_after)
+        let dir = Direction::from_u32(action);
+
+        let after_board = match self.game.get_afterstate(dir) {
+            Some(board) => board,
+            None => return (0.0, -10.0), // Trả về lỗi nếu action không hợp lệ
         };
 
-        // Lấy board sau khi di chuyển (chưa spawn)
-        let after_board_opt = self.game.get_afterstate(dir);
-
-        // Nếu nước đi không hợp lệ (về lý thuyết không nên xảy ra nếu đã check valid)
-        if after_board_opt.is_none() {
-            return (0.0, -10.0); // Phạt nặng
-        }
-        let after_board = after_board_opt.unwrap();
-
-        // Flatten để đưa vào mạng
+        // Flatten board để đưa vào mạng
         let mut s_after_flat = [0u32; 16];
         for r in 0..4 {
             for c in 0..4 {
@@ -722,59 +706,42 @@ impl ThreesEnv {
             }
         }
 
-        // A. Tính V(S_after) - Đây là giá trị ta cần tối ưu
+        // 2. Dự đoán V(S_after) từ mạng
         let v_after = brain.predict(&s_after_flat);
 
-        // Lưu điểm cũ để tính reward
+        // 3. Thực hiện hành động thật (Environment Step)
         let score_old = self.game.score;
-        // let _phi_old = get_composite_potential(&self.game.board, &self.config); // Giữ lại để tránh unused warning nếu cần, hoặc xóa
-
-        // 2. Thực hiện hành động thật (Môi trường chuyển sang S')
-        // Lúc này quái mới sinh ra, tạo thành S'
         let (_, _, done, _) = self.step(action);
+        let reward = (self.game.score - score_old) as f64;
 
-        let score_new = self.game.score;
-        // let _phi_new = get_composite_potential(&self.game.board, &self.config);
-
-        let mut reward = (score_new - score_old) as f64;
-
-        // if self.game.check_game_over() {
-        //     reward -= 260.0;
-        // }
-
-        // 3. Tính V(S'_after) cho bước tiếp theo (TD Target)
+        // 4. Tính Target V(S'_after) cho bước tiếp theo
+        // QUAN TRỌNG: Luôn dùng Ply = 1 (1-step lookahead) để tính Target chuẩn xác
         let v_next_after = if done {
             0.0
         } else {
-            // Lấy cả action và value tốt nhất từ Ply 3
-            let (_best_action_idx, best_val_found) = self.get_best_action_ply(brain, ply);
+            // Gọi hàm tìm best action nhưng FIX CỨNG DEPTH = 1
+            let (best_action, best_val) = self.get_best_action_ply(brain, 1);
 
-            // Kiểm tra điều kiện board còn move được
-            if best_val_found == f64::NEG_INFINITY {
-                0.0 // Trường hợp không còn nước đi hợp lệ
+            // Kiểm tra sentinel value 100 (tắc đường) hoặc giá trị vô cực
+            if best_action == 100 || best_val == f64::NEG_INFINITY {
+                0.0
             } else {
-                best_val_found // Sử dụng trực tiếp giá trị đã tính trong hàm ply
+                best_val
             }
         };
 
-        // 4. Tính TD Error & Update
-        // Target hướng về Afterstate của bước sau
+        // 5. Tính TD Error
         let td_error = reward + self.gamma * v_next_after - v_after;
 
-        // Update weights dựa trên Afterstate hiện tại (s_after_flat)
-        let num_tuples = brain.tuples.len() as f64;
-        let effective_alpha = alpha / num_tuples;
+        // 6. Cập nhật Traces & Weights
+        let effective_alpha = alpha / brain.tuples.len() as f64;
 
-        // Update vào S_after, KHÔNG PHẢI S hiện tại
-        // brain.update_weights_td_lambda(&s_after_flat, td_error, effective_alpha);
-
-        // KIỂM TRA & INIT TRACES NẾU CẦN (Lazy Init)
+        // Lazy init traces
         if self.traces.is_empty() {
             let sizes: Vec<usize> = brain.weights.iter().map(|w| w.len()).collect();
             self.reset_traces(brain.weights.len(), &sizes);
         }
 
-        // Gọi hàm update mới, truyền traces của Env vào Brain
         brain.update_weights_td_lambda(
             &mut self.traces,
             &mut self.active_trace_indices,

@@ -15,6 +15,18 @@ pub enum Direction {
     Right,
 }
 
+impl Direction {
+    pub fn from_u32(val: u32) -> Self {
+        match val {
+            0 => Direction::Up,
+            1 => Direction::Down,
+            2 => Direction::Left,
+            3 => Direction::Right,
+            _ => unreachable!(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Game {
     pub board: [[Tile; 4]; 4],
