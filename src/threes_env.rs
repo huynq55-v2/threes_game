@@ -1,16 +1,14 @@
-use crate::deck_tracker::DeckTracker;
 use crate::game::{Direction, Game};
 use crate::n_tuple_network::NTupleNetwork;
 use crate::pbt::TrainingConfig;
-use rand::Rng as _;
+use rand::seq::IndexedRandom;
 
 pub struct ThreesEnv {
     pub game: Game,
+
     gamma: f64,
-    // adaptive_manager: AdaptiveManager, // Unused
     pub config: TrainingConfig,
 
-    // THÊM 2 trường này vào Env (Local State)
     pub traces: Vec<Vec<f64>>,
     pub active_trace_indices: Vec<Vec<usize>>,
 }
@@ -21,10 +19,7 @@ impl ThreesEnv {
         ThreesEnv {
             game,
             gamma: gamma,
-            // adaptive_manager: AdaptiveManager::new(),
             config: TrainingConfig::default(),
-
-            // Khởi tạo rỗng
             traces: Vec::new(),
             active_trace_indices: Vec::new(),
         }
@@ -55,706 +50,6 @@ impl ThreesEnv {
         self.config = new_cfg;
     }
 
-    pub fn set_gamma(&mut self, gamma: f64) {
-        self.gamma = gamma;
-    }
-
-    // Return signature: (Board, Reward, Done, Hints)
-    fn step(&mut self, action: u32) -> (Vec<u32>, f64, bool, Vec<u32>) {
-        let dir = match action {
-            0 => Direction::Up,
-            1 => Direction::Down,
-            2 => Direction::Left,
-            3 => Direction::Right,
-            _ => {
-                return (
-                    self.get_board_flat().to_vec(),
-                    -10.0,
-                    true,
-                    self.game.hints.clone(),
-                )
-            }
-        };
-
-        // let phi_old = get_composite_potential(&self.game.board, &self.config);
-        let score_old = self.game.score;
-
-        if self.game.can_move(dir) {
-            let (_, _) = self.game.move_dir(dir);
-
-            let game_over = self.game.check_game_over();
-
-            // let phi_new = get_composite_potential(&self.game.board, &self.config);
-            let score_new = self.game.score;
-
-            let base_reward = (score_new - score_old) as f64;
-            // let gamma = self.gamma;
-            // let raw_shaping = (gamma * phi_new) - phi_old;
-
-            // let final_reward = self
-            //     .adaptive_manager
-            //     .update_and_scale(base_reward, raw_shaping);
-
-            let final_reward = base_reward; // no shaping
-
-            (
-                self.get_board_flat().to_vec(),
-                final_reward,
-                game_over,
-                self.game.hints.clone(),
-            )
-        } else {
-            unreachable!()
-        }
-    }
-
-    fn valid_moves(&self) -> Vec<bool> {
-        vec![
-            self.game.can_move(Direction::Up),
-            self.game.can_move(Direction::Down),
-            self.game.can_move(Direction::Left),
-            self.game.can_move(Direction::Right),
-        ]
-    }
-
-    pub fn get_random_valid_action(&self) -> u32 {
-        let mut valid_actions = Vec::new();
-
-        // 1. Duyệt qua 4 hướng để thu thập các hướng đi được
-        for action in 0..4 {
-            let dir = match action {
-                0 => Direction::Up,
-                1 => Direction::Down,
-                2 => Direction::Left,
-                3 => Direction::Right,
-                _ => continue,
-            };
-
-            // Dùng hàm can_move mà chúng ta đã thống nhất để kiểm tra
-            if self.game.can_move(dir) {
-                valid_actions.push(action);
-            }
-        }
-
-        // 2. Nếu danh sách trống -> Hết đường đi
-        if valid_actions.is_empty() {
-            return 100; // Sentinel value báo hiệu Game Over
-        }
-
-        // 3. Chọn ngẫu nhiên một action trong danh sách hợp lệ
-        let mut rng = rand::rng();
-        // Dùng choose để bốc một phần tử ngẫu nhiên (An toàn hơn loop random)
-        use rand::prelude::IndexedRandom;
-        *valid_actions.choose(&mut rng).unwrap() as u32
-    }
-
-    pub fn get_best_action_safe(&self, brain: &NTupleNetwork) -> u32 {
-        let mut best_action = 0;
-        let mut max_of_min_quality = f64::NEG_INFINITY;
-
-        for action_idx in 0..4 {
-            let dir = match action_idx {
-                0 => Direction::Up,
-                1 => Direction::Down,
-                2 => Direction::Left,
-                3 => Direction::Right,
-                _ => continue,
-            };
-
-            let outcomes = self.game.get_all_possible_outcomes(dir);
-
-            if !outcomes.is_empty() {
-                let mut min_quality = f64::INFINITY;
-
-                for outcome in &outcomes {
-                    let future_value = brain.predict_game(outcome);
-                    let move_quality = future_value;
-
-                    if move_quality < min_quality {
-                        min_quality = move_quality;
-                    }
-                }
-
-                if min_quality > max_of_min_quality {
-                    max_of_min_quality = min_quality;
-                    best_action = action_idx;
-                }
-            }
-        }
-
-        best_action as u32
-    }
-
-    pub fn get_best_action_expectimax(&self, brain: &NTupleNetwork) -> u32 {
-        let mut best_val = -f64::MAX;
-        let mut best_action = 0;
-
-        for action_idx in 0..4 {
-            let dir = match action_idx {
-                0 => Direction::Up,
-                1 => Direction::Down,
-                2 => Direction::Left,
-                3 => Direction::Right,
-                _ => continue,
-            };
-
-            let outcomes = self.game.get_all_possible_outcomes(dir);
-
-            if !outcomes.is_empty() {
-                let mut expected_value = 0.0;
-                for outcome in &outcomes {
-                    let future_value = brain.predict_game(outcome);
-                    let move_quality = future_value;
-
-                    expected_value += move_quality;
-                }
-                expected_value /= outcomes.len() as f64;
-
-                if expected_value > best_val {
-                    best_val = expected_value;
-                    best_action = action_idx;
-                }
-            }
-        }
-        best_action
-    }
-
-    // pub fn get_best_action_expectimax_depth2(&self, brain: &NTupleNetwork) -> u32 {
-    //     let mut best_val = f64::NEG_INFINITY;
-    //     let mut best_action = 0;
-
-    //     // --- PLY 1: MAX NODE (AI chọn hướng đi hiện tại) ---
-    //     for action in 0..4 {
-    //         let dir = match action {
-    //             0 => Direction::Up,
-    //             1 => Direction::Down,
-    //             2 => Direction::Left,
-    //             3 => Direction::Right,
-    //             _ => continue,
-    //         };
-
-    //         // Lấy tất cả các kịch bản gạch mọc có thể xảy ra từ hướng đi này
-    //         // Hàm này của Huy đã xử lý: Trượt -> Lấy Hint -> Nhân chéo Vị trí x Giá trị
-    //         let outcomes = self.game.get_all_possible_outcomes(dir);
-
-    //         if !outcomes.is_empty() {
-    //             let mut expected_value_ply1 = 0.0;
-
-    //             // Duyệt qua từng kịch bản gạch mọc (Xác suất chia đều như Huy nói)
-    //             for outcome_game in &outcomes {
-    //                 // --- PLY 2: MAX NODE (AI tìm phản xạ tốt nhất từ kịch bản đó - DEPTH 2) ---
-    //                 // Thay vì chấm điểm tĩnh, ta dùng logic Afterstate để tìm nước đi "thoát hiểm" nhất
-    //                 let best_future_score =
-    //                     self.get_max_afterstate_score_from_game(outcome_game, brain);
-
-    //                 expected_value_ply1 += best_future_score;
-    //             }
-
-    //             // Tính trung bình cộng xác suất (Huy: 100% cho 1,2,3 hoặc 33% cho Bonus)
-    //             expected_value_ply1 /= outcomes.len() as f64;
-
-    //             if expected_value_ply1 > best_val {
-    //                 best_val = expected_value_ply1;
-    //                 best_action = action;
-    //             }
-    //         }
-    //     }
-    //     best_action as u32
-    // }
-
-    // pub fn get_best_action_parallel_depth5(&self, brain: &NTupleNetwork) -> u32 {
-    //     let actions = vec![0, 1, 2, 3];
-
-    //     // Song song hóa 4 hướng đi chính
-    //     let action_results: Vec<(u32, f64)> = actions
-    //         .par_iter()
-    //         .map(|&action| {
-    //             let dir = match action {
-    //                 0 => Direction::Up,
-    //                 1 => Direction::Down,
-    //                 2 => Direction::Left,
-    //                 3 => Direction::Right,
-    //                 _ => return (action, f64::NEG_INFINITY),
-    //             };
-
-    //             let outcomes = self.game.get_all_possible_outcomes(dir);
-    //             if outcomes.is_empty() {
-    //                 return (action, f64::NEG_INFINITY);
-    //             }
-
-    //             // Ở mỗi nhánh, ta gọi hàm đệ quy expectimax_node
-    //             let total_val: f64 = outcomes
-    //                 .iter()
-    //                 .map(|outcome_game| {
-    //                     self.expectimax_node(outcome_game, 4, brain) // depth 4 vì ply 1 đã xong
-    //                 })
-    //                 .sum();
-
-    //             (action, total_val / outcomes.len() as f64)
-    //         })
-    //         .collect();
-
-    //     // Lấy action có điểm kỳ vọng cao nhất
-    //     action_results
-    //         .into_iter()
-    //         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-    //         .map(|(act, _)| act)
-    //         .unwrap_or(0)
-    // }
-
-    // pub fn get_best_action_recursive(&self, brain: &NTupleNetwork, depth: u32) -> u32 {
-    //     let mut best_val = -f64::MAX;
-    //     let mut best_action = 0;
-
-    //     // PLY 1: AI chọn nước đi đầu tiên
-    //     for action in 0..4 {
-    //         let dir = match action {
-    //             0 => Direction::Up,
-    //             1 => Direction::Down,
-    //             2 => Direction::Left,
-    //             3 => Direction::Right,
-    //             _ => continue,
-    //         };
-
-    //         // Lấy danh sách các kịch bản gạch mọc (Chance Node 1)
-    //         // (Hàm này của Huy đã tự update tracker và hint rồi)
-    //         let outcomes = self.game.get_all_possible_outcomes(dir);
-
-    //         if !outcomes.is_empty() {
-    //             let mut expected_value = 0.0;
-
-    //             // Tính giá trị trung bình của các kịch bản
-    //             for outcome_game in &outcomes {
-    //                 // Gọi đệ quy xuống các tầng sâu hơn
-    //                 // depth = SEARCH_DEPTH - 1 vì ta đã đi xong nước đầu tiên
-    //                 expected_value += self.expectimax_node(outcome_game, depth - 1, brain);
-    //             }
-
-    //             expected_value /= outcomes.len() as f64;
-
-    //             if expected_value > best_val {
-    //                 best_val = expected_value;
-    //                 best_action = action;
-    //             }
-    //         }
-    //     }
-
-    //     // Fallback: Nếu không đường nào đi được (best_action vẫn = 0 và val âm vô cùng)
-    //     // thì cứ trả về 0, game sẽ tự xử lý Game Over sau.
-    //     best_action as u32
-    // }
-
-    // /// Hàm đệ quy xử lý các tầng tiếp theo
-    // /// Input: game state đã mọc gạch xong (đang chờ AI đi nước tiếp theo)
-    // fn expectimax_node(&self, game: &Game, depth: u32, brain: &NTupleNetwork) -> f64 {
-    //     // BASE CASE: Nếu đã chạm đáy độ sâu
-    //     // Ta dùng Afterstate (nhìn thêm 1 bước đệm) để đánh giá lá chắn cuối cùng
-    //     if depth == 0 {
-    //         return self.get_max_afterstate_score_from_game(game, brain);
-    //     }
-
-    //     let mut max_val = -f64::MAX;
-    //     let mut can_move = false;
-
-    //     // MAX NODE: AI chọn nước đi tốt nhất tại tầng này
-    //     for action in 0..4 {
-    //         let dir = match action {
-    //             0 => Direction::Up,
-    //             1 => Direction::Down,
-    //             2 => Direction::Left,
-    //             3 => Direction::Right,
-    //             _ => continue,
-    //         };
-
-    //         // CHANCE NODE: Sinh ra các kịch bản gạch mọc tiếp theo
-    //         let outcomes = game.get_all_possible_outcomes(dir);
-
-    //         if !outcomes.is_empty() {
-    //             can_move = true;
-    //             let mut current_dir_expected_val = 0.0;
-
-    //             for outcome_game in &outcomes {
-    //                 // ĐỆ QUY TIẾP: Xuống tầng sâu hơn (depth - 1)
-    //                 current_dir_expected_val +=
-    //                     self.expectimax_node(outcome_game, depth - 1, brain);
-    //             }
-
-    //             // Tính trung bình (Average)
-    //             current_dir_expected_val /= outcomes.len() as f64;
-
-    //             // Maximize: AI sẽ chọn hướng có kỳ vọng cao nhất
-    //             if current_dir_expected_val > max_val {
-    //                 max_val = current_dir_expected_val;
-    //             }
-    //         }
-    //     }
-
-    //     // Nếu tại tầng này không đi được đâu nữa -> Game Over -> Điểm 0
-    //     if !can_move {
-    //         return 0.0;
-    //     }
-
-    //     max_val
-    // }
-
-    // fn get_max_afterstate_score_from_game(&self, game: &Game, brain: &NTupleNetwork) -> f64 {
-    //     let mut max_val = f64::NEG_INFINITY;
-    //     let mut can_move_any = false;
-
-    //     // Thử 4 hướng phản xạ tiếp theo
-    //     for action in 0..4 {
-    //         let dir = match action {
-    //             0 => Direction::Up,
-    //             1 => Direction::Down,
-    //             2 => Direction::Left,
-    //             3 => Direction::Right,
-    //             _ => continue,
-    //         };
-
-    //         // SỬ DỤNG TRỰC TIẾP HÀM CỦA HUY TẠI ĐÂY
-    //         if let Some(after_board) = game.get_afterstate(dir) {
-    //             can_move_any = true;
-
-    //             // Chuyển board sang dạng phẳng để N-Tuple predict
-    //             let mut flat = [0u32; 16];
-    //             for r in 0..4 {
-    //                 for c in 0..4 {
-    //                     flat[r * 4 + c] = after_board[r][c].value;
-    //                 }
-    //             }
-
-    //             let score = brain.predict(&flat);
-    //             if score > max_val {
-    //                 max_val = score;
-    //             }
-    //         }
-    //     }
-
-    //     // Nếu bước tiếp theo không đi được hướng nào (Game Over giả lập)
-    //     if !can_move_any {
-    //         return 0.0; // Phạt nặng vì nước đi trước đó dẫn đến ngõ cụt
-    //     }
-
-    //     max_val
-    // }
-
-    /// Hàm Wrapper: Gọi từ bên ngoài với số Ply mong muốn
-    /// Ví dụ: ply = 1 (chỉ trượt), ply = 4 (trượt-mọc-trượt-mọc)
-    // Hàm gọi từ bên ngoài (Root)
-    // --- MAIN SEARCH FUNCTION ---
-    pub fn get_best_action_ply(&self, brain: &NTupleNetwork, depth: u32) -> (u32, f64) {
-        let mut best_val = f64::NEG_INFINITY;
-        let mut best_action = 0;
-        let mut found_move = false;
-
-        for action in 0..4 {
-            let dir = match action {
-                0 => Direction::Up,
-                1 => Direction::Down,
-                2 => Direction::Left,
-                3 => Direction::Right,
-                _ => continue,
-            };
-
-            if !self.game.can_move(dir) {
-                continue;
-            }
-
-            // 1. TẠO AFTER STATE
-            // get_afterstate trả về raw board [[Tile; 4]; 4], cần wrap vào struct Game
-            let after_board = self.game.get_afterstate(dir).unwrap();
-
-            // FIX ERROR 1: Tạo một Game struct tạm thời từ raw board
-            // Clone game hiện tại để giữ các thông tin phụ (deck, score...) nếu cần
-            let mut after_game = self.game.clone();
-            after_game.board = after_board;
-
-            // 2. XỬ LÝ DỰA TRÊN DEPTH (PLY)
-            let val;
-            if depth == 1 {
-                // CASE PLY LẺ (1): Dừng ngay tại After State
-                // FIX ERROR: Truyền &Game vào predict
-                val = brain.predict_game(&after_game);
-            } else {
-                // CASE PLY > 1: Tiếp tục đi xuống lớp Spawn
-                // FIX ERROR: Truyền &Game và thêm 'dir' vào hàm search_spawn
-                val = self.search_spawn_node(&after_game, dir, depth - 1, brain);
-            }
-
-            if val > best_val {
-                best_val = val;
-                best_action = action;
-                found_move = true;
-            }
-        }
-
-        if !found_move {
-            return (0, -1_000_000.0);
-        }
-
-        (best_action as u32, best_val)
-    }
-
-    // --- SPAWN NODE (Sinh quân ngẫu nhiên) ---
-    // FIX SIGNATURE: Thêm tham số `dir: Direction` để biết hướng vừa đi
-    fn search_spawn_node(
-        &self,
-        after_state: &Game,
-        dir: Direction,
-        depth: u32,
-        brain: &NTupleNetwork,
-    ) -> f64 {
-        // FIX ERROR 3: Dùng hàm có sẵn get_all_possible_outcomes_pure(dir)
-        let mut outcomes = after_state.get_all_possible_outcomes_pure(dir);
-
-        if outcomes.is_empty() {
-            return -1_000_000.0;
-        }
-
-        let mut total_score = 0.0;
-        let prob = 1.0 / outcomes.len() as f64;
-
-        // SỬA: &outcomes -> &mut outcomes
-        for outcome_game in &mut outcomes {
-            let val;
-
-            // Bây giờ gọi hàm mutable check_game_over() thoải mái
-            if outcome_game.check_game_over() {
-                // Giả sử hàm này tên là check_game_over hay is_game_over
-                val = -1_000_000.0;
-            } else {
-                // ... code logic cũ ...
-                if depth == 1 {
-                    val = brain.predict_game(outcome_game);
-                } else {
-                    val = self.search_move_node(outcome_game, depth - 1, brain);
-                }
-            }
-            total_score += val * prob;
-        }
-
-        total_score
-    }
-
-    // --- MOVE NODE (Đệ quy cho depth sâu) ---
-    fn search_move_node(&self, game: &Game, depth: u32, brain: &NTupleNetwork) -> f64 {
-        let mut best_val = f64::NEG_INFINITY;
-        let mut can_move = false;
-
-        for action in 0..4 {
-            let dir = match action {
-                0 => Direction::Up,
-                1 => Direction::Down,
-                2 => Direction::Left,
-                3 => Direction::Right,
-                _ => continue,
-            };
-
-            if game.can_move(dir) {
-                can_move = true;
-
-                // Tương tự: Wrap raw board vào Game struct
-                let after_board = game.get_afterstate(dir).unwrap();
-                let mut after_game = game.clone();
-                after_game.board = after_board;
-
-                let val;
-                if depth == 1 {
-                    // Dừng ở Move (After State)
-                    val = brain.predict_game(&after_game);
-                } else {
-                    // Xuống Spawn, truyền kèm dir
-                    val = self.search_spawn_node(&after_game, dir, depth - 1, brain);
-                }
-
-                if val > best_val {
-                    best_val = val;
-                }
-            }
-        }
-
-        if !can_move {
-            return -1_000_000.0;
-        }
-
-        best_val
-    }
-
-    // pub fn get_best_action_afterstate(&self, brain: &NTupleNetwork) -> u32 {
-    //     let mut best_action = 0;
-    //     let mut best_val = f64::NEG_INFINITY;
-
-    //     for action in 0..4 {
-    //         let dir = match action {
-    //             0 => Direction::Up,
-    //             1 => Direction::Down,
-    //             2 => Direction::Left,
-    //             3 => Direction::Right,
-    //             _ => continue,
-    //         };
-
-    //         if let Some(after_board) = self.game.get_afterstate(dir) {
-    //             let mut flat = [0u32; 16];
-    //             for r in 0..4 {
-    //                 for c in 0..4 {
-    //                     flat[r * 4 + c] = after_board[r][c].value;
-    //                 }
-    //             }
-
-    //             let val = brain.predict(&flat);
-    //             if val > best_val {
-    //                 best_val = val;
-    //                 best_action = action;
-    //             }
-    //         }
-    //     }
-    //     best_action as u32
-    // }
-
-    // /// Afterstate Recursive dùng để Gen Data
-    // pub fn get_best_action_afterstate_recursive(&self, brain: &NTupleNetwork, depth: u32) -> u32 {
-    //     let mut best_val = f64::NEG_INFINITY;
-    //     let mut best_action = 0;
-
-    //     for action in 0..4 {
-    //         let dir = match action {
-    //             0 => Direction::Up,
-    //             1 => Direction::Down,
-    //             2 => Direction::Left,
-    //             3 => Direction::Right,
-    //             _ => continue,
-    //         };
-
-    //         // Ply 1: AI thực hiện trượt board
-    //         if let Some(after_board) = self.game.get_afterstate(dir) {
-    //             let mut temp_game = self.game.clone();
-    //             temp_game.board = after_board;
-
-    //             // Đi sâu xuống các tầng tiếp theo (mỗi tầng là 1 cặp: Spawn + Move)
-    //             let val = self.afterstate_node_recursive(&temp_game, depth - 1, brain);
-
-    //             if val > best_val {
-    //                 best_val = val;
-    //                 best_action = action;
-    //             }
-    //         }
-    //     }
-    //     best_action as u32
-    // }
-
-    // fn afterstate_node_recursive(&self, game: &Game, depth: u32, brain: &NTupleNetwork) -> f64 {
-    //     if depth <= 1 {
-    //         return brain.predict_game(game);
-    //     }
-
-    //     let mut total_expected_val = 0.0;
-    //     let mut move_count = 0;
-
-    //     // Duyệt qua 4 hướng để tìm các kịch bản mọc gạch tiếp theo
-    //     for action in 0..4 {
-    //         let dir = match action {
-    //             0 => Direction::Up,
-    //             1 => Direction::Down,
-    //             2 => Direction::Left,
-    //             3 => Direction::Right,
-    //             _ => continue,
-    //         };
-
-    //         // TRUYỀN DIR VÀO ĐÂY
-    //         let outcomes = game.get_all_possible_outcomes_pure(dir);
-
-    //         if outcomes.is_empty() {
-    //             continue;
-    //         }
-
-    //         move_count += 1;
-    //         let mut best_next_val = f64::NEG_INFINITY;
-
-    //         for outcome_game in &outcomes {
-    //             // Đệ quy xuống tầng sâu hơn
-    //             let val = self.afterstate_node_recursive(outcome_game, depth - 1, brain);
-    //             if val > best_next_val {
-    //                 best_next_val = val;
-    //             }
-    //         }
-
-    //         total_expected_val += if best_next_val == f64::NEG_INFINITY {
-    //             0.0
-    //         } else {
-    //             best_next_val
-    //         };
-    //     }
-
-    //     if move_count == 0 {
-    //         return 0.0;
-    //     }
-    //     total_expected_val / move_count as f64
-    // }
-
-    pub fn train_step(&mut self, brain: &mut NTupleNetwork, action: u32, alpha: f64) -> (f64, f64) {
-        // 1. Lấy Afterstate hiện tại (S_after)
-        let dir = Direction::from_u32(action);
-
-        let after_board = match self.game.get_afterstate(dir) {
-            Some(board) => board,
-            None => return (0.0, -10.0), // Trả về lỗi nếu action không hợp lệ
-        };
-
-        // Flatten board để đưa vào mạng
-        let mut s_after_flat = [0u32; 16];
-        for r in 0..4 {
-            for c in 0..4 {
-                s_after_flat[r * 4 + c] = after_board[r][c].value;
-            }
-        }
-
-        // 2. Dự đoán V(S_after) từ mạng
-        let v_after = brain.predict(&s_after_flat);
-
-        // 3. Thực hiện hành động thật (Environment Step)
-        let score_old = self.game.score;
-        let (_, _, done, _) = self.step(action);
-        let reward = (self.game.score - score_old) as f64;
-
-        // 4. Tính Target V(S'_after) cho bước tiếp theo
-        // QUAN TRỌNG: Luôn dùng Ply = 1 (1-step lookahead) để tính Target chuẩn xác
-        let v_next_after = if done {
-            0.0
-        } else {
-            // Gọi hàm tìm best action nhưng FIX CỨNG DEPTH = 1
-            let (best_action, best_val) = self.get_best_action_ply(brain, 1);
-
-            // Kiểm tra sentinel value 100 (tắc đường) hoặc giá trị vô cực
-            if best_action == 100 || best_val == f64::NEG_INFINITY {
-                0.0
-            } else {
-                best_val
-            }
-        };
-
-        // 5. Tính TD Error
-        let td_error = reward + self.gamma * v_next_after - v_after;
-
-        // 6. Cập nhật Traces & Weights
-        let effective_alpha = alpha / brain.tuples.len() as f64;
-
-        // Lazy init traces
-        if self.traces.is_empty() {
-            let sizes: Vec<usize> = brain.weights.iter().map(|w| w.len()).collect();
-            self.reset_traces(brain.weights.len(), &sizes);
-        }
-
-        brain.update_weights_td_lambda(
-            &mut self.traces,
-            &mut self.active_trace_indices,
-            &s_after_flat,
-            td_error,
-            effective_alpha,
-        );
-
-        (td_error.abs(), reward)
-    }
-
     pub fn reset(&mut self) -> (Vec<u32>, Vec<u32>) {
         self.game = Game::new();
 
@@ -773,8 +68,232 @@ impl ThreesEnv {
         (self.get_board_flat().to_vec(), self.game.hints.clone())
     }
 
+    pub fn get_random_valid_action(&self) -> Option<Direction> {
+        // 1. Thu thập các hướng đi hợp lệ vào một Vector
+        let mut valid_actions = Vec::new();
+
+        // Duyệt qua các enum variants (nếu bạn có danh sách variants thì dùng, không thì match 0..4)
+        for &dir in &[
+            Direction::Up,
+            Direction::Down,
+            Direction::Left,
+            Direction::Right,
+        ] {
+            if self.game.can_move(dir) {
+                valid_actions.push(dir);
+            }
+        }
+
+        // 2. Kiểm tra nếu không có nước đi nào hợp lệ
+        if valid_actions.is_empty() {
+            return None;
+        }
+
+        // 3. Chọn ngẫu nhiên một action và trả về chính nó (không ép kiểu u32)
+        let mut rng = rand::rng();
+
+        // choose() trả về Option<&Direction>, ta dùng copied() để lấy Direction
+        valid_actions.choose(&mut rng).copied()
+    }
+
+    // 1. ROOT NODE: Bắt đầu tìm kiếm
+    pub fn get_best_action_depth(
+        &self,
+        brain: &NTupleNetwork,
+        depth: u32,
+    ) -> (Option<Direction>, f64) {
+        let mut best_val = f64::NEG_INFINITY;
+        let mut best_action: Option<Direction> = None;
+        let directions = [
+            Direction::Up,
+            Direction::Down,
+            Direction::Left,
+            Direction::Right,
+        ];
+
+        for &dir in &directions {
+            if !self.game.can_move(dir) {
+                continue;
+            }
+
+            // Tạo Afterstate (Lớp 1)
+            let after_game = self.game.gen_afterstate(dir);
+
+            // Quyết định: Nếu hết depth thì dừng, còn không thì xuống Chance Node
+            let val;
+            if depth <= 1 {
+                val = brain.predict_game(&after_game);
+            } else {
+                // Xuống lớp Chance, giảm depth
+                val = self.search_chance_node(&after_game, depth - 1, brain);
+            }
+
+            if val > best_val {
+                best_val = val;
+                best_action = Some(dir);
+            }
+        }
+
+        if best_action.is_none() {
+            return (None, -1_000_000.0);
+        }
+        (best_action, best_val)
+    }
+
+    // --- CHANCE NODE (Nút tính xác suất) ---
+    // Input: Afterstate (đã có predicted_future_distribution từ bước gen_outcomes)
+    // Nhiệm vụ: Tính giá trị trung bình (Expectation)
+    fn search_chance_node(&self, after_state: &Game, depth: u32, brain: &NTupleNetwork) -> f64 {
+        // 1. Sinh ra các kịch bản Spawn (Vị trí x Hint hiện tại)
+        let outcomes = after_state.gen_all_possible_outcomes();
+
+        if outcomes.is_empty() {
+            return -1_000_000.0;
+        }
+
+        let mut total_expected_score = 0.0;
+
+        // 2. Duyệt qua từng kịch bản Spawn (Vị trí đã xác định)
+        for (mut outcome_game, prob_outcome) in outcomes {
+            // Lấy phân phối xác suất tương lai đã lưu
+            let dist = &outcome_game.predicted_future_distribution;
+
+            // SAFETY CHECK: Nếu logic đúng thì không bao giờ rỗng ở depth này
+            if dist.is_empty() {
+                unreachable!("Logic Error: Chance node must have future distribution");
+            }
+
+            // 3. TÍNH KỲ VỌNG CỦA OUTCOME NÀY
+            // Value = Sum( P(next_val) * Score(next_val) )
+            let mut outcome_value = 0.0;
+
+            for (next_tile_val, prob_next_tile) in dist {
+                // --- BƯỚC ĐỒNG BỘ HÓA QUAN TRỌNG ---
+                // Gán giá trị dự đoán từ Tracker vào `hints`.
+                // Mục đích: Để hàm `search_move_node` ở độ sâu tiếp theo
+                // có dữ liệu đầu vào y hệt như Turn đầu tiên.
+                // Ta không quan tâm màu sắc hay dải range, ta gán thẳng giá trị cụ thể.
+                outcome_game.hints = vec![*next_tile_val];
+
+                // Bây giờ game state đã đầy đủ (Board mới + Hint mới giả lập)
+                // Gọi đệ quy xuống Move Node
+                let best_score_of_next_turn = self.search_move_node(&outcome_game, depth, brain);
+
+                // Cộng dồn: Điểm x Xác suất xảy ra con số này
+                outcome_value += prob_next_tile * best_score_of_next_turn;
+            }
+
+            // Cộng dồn vào tổng thể: Giá trị Outcome x Xác suất spawn ra Outcome này
+            total_expected_score += prob_outcome * outcome_value;
+        }
+
+        total_expected_score
+    }
+
+    // 3. MOVE NODE: Chọn nước đi tốt nhất từ Full State
+    fn search_move_node(&self, game: &Game, depth: u32, brain: &NTupleNetwork) -> f64 {
+        let mut best_val = f64::NEG_INFINITY;
+        let mut can_move = false;
+        let directions = [
+            Direction::Up,
+            Direction::Down,
+            Direction::Left,
+            Direction::Right,
+        ];
+
+        for &dir in &directions {
+            if game.can_move(dir) {
+                can_move = true;
+
+                let next_after_game = game.gen_afterstate(dir);
+                let val;
+
+                if depth <= 1 {
+                    val = brain.predict_game(&next_after_game);
+                } else {
+                    val = self.search_chance_node(&next_after_game, depth - 1, brain);
+                }
+
+                if val > best_val {
+                    best_val = val;
+                }
+            }
+        }
+
+        if !can_move {
+            return -1_000_000.0;
+        }
+        best_val
+    }
+
+    pub fn train_step(
+        &mut self,
+        brain: &mut NTupleNetwork,
+        action: Direction,
+        alpha: f64,
+    ) -> (f64, f64) {
+        if !self.game.can_move(action) {
+            panic!("Invalid action");
+        }
+
+        let after_game = self.game.gen_afterstate(action);
+
+        // Flatten board để đưa vào mạng
+        let mut s_after_flat = [0u32; 16];
+        for r in 0..4 {
+            for c in 0..4 {
+                s_after_flat[r * 4 + c] = after_game.board[r][c].value;
+            }
+        }
+
+        // 2. Dự đoán V(S_after) từ mạng
+        let v_after = brain.predict(&s_after_flat);
+
+        // 3. Thực hiện hành động thật (Environment Step)
+        let score_old = self.game.calculate_score();
+        self.game.make_full_move(action);
+        let done = self.game.is_game_over();
+        let score_new = after_game.calculate_score();
+        let base_reward = (score_new - score_old) as f64;
+
+        // 4. Tính Target V(S'_after) cho bước tiếp theo
+        // QUAN TRỌNG: Luôn dùng Ply = 1 (1-step lookahead) để tính Target chuẩn xác
+        let v_next_after = if done {
+            0.0
+        } else {
+            let (best_action, best_val) = self.get_best_action_depth(brain, 1);
+
+            if best_action.is_none() {
+                0.0
+            } else {
+                best_val
+            }
+        };
+
+        // 5. Tính TD Error
+        let td_error = base_reward + self.gamma * v_next_after - v_after;
+
+        // 6. Cập nhật Traces & Weights
+        let effective_alpha = alpha / brain.tuples.len() as f64;
+
+        // Lazy init traces
+        if self.traces.is_empty() {
+            let sizes: Vec<usize> = brain.weights.iter().map(|w| w.len()).collect();
+            self.reset_traces(brain.weights.len(), &sizes);
+        }
+
+        brain.update_weights_td_lambda(
+            &mut self.traces,
+            &mut self.active_trace_indices,
+            &s_after_flat,
+            td_error,
+            effective_alpha,
+        );
+
+        (td_error.abs(), base_reward)
+    }
+
     pub fn get_board_flat(&self) -> [u32; 16] {
-        // Ủy quyền trực tiếp cho Game xử lý
         self.game.get_board_flat()
     }
 }

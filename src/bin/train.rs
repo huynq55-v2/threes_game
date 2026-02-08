@@ -5,9 +5,9 @@ use std::io::BufReader;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use std::{env, thread};
-use threes_rs::game::Direction;
 use threes_rs::hotload_config::HotLoadConfig;
-use threes_rs::{n_tuple_network::NTupleNetwork, pbt::TrainingConfig, threes_env::ThreesEnv};
+use threes_rs::pbt::TrainingConfig;
+use threes_rs::{n_tuple_network::NTupleNetwork, threes_env::ThreesEnv};
 
 // Hằng số Tỷ lệ vàng
 const GOLDEN_RATIO: f64 = 1.61803398875;
@@ -52,34 +52,6 @@ fn main() {
     let override_episode = find_latest_checkpoint().unwrap_or(0);
 
     println!("🔎 Start Episode: {}", override_episode);
-
-    // Policy
-    let policy_arg = if args.len() > 2 {
-        args[2].to_lowercase()
-    } else {
-        "expect".to_string()
-    };
-
-    let training_policy = match policy_arg.as_str() {
-        "expect" => {
-            println!("🧠 Training Mode: EXPECTIMAX");
-            TrainingPolicy::Expectimax
-        }
-        "safe" => {
-            println!("🧠 Training Mode: SAFE");
-            TrainingPolicy::Safe
-        }
-        _ => {
-            println!("🧠 Training Mode: AFTERSTATE (Default/Optimized)");
-            TrainingPolicy::Afterstate
-        }
-    };
-
-    let multiplier = args[2].to_lowercase();
-
-    let mut buff_multiplier = 1.0;
-
-    println!("Multiplier Strategy: {}", multiplier);
 
     // --- SETUP BRAIN ---
     let mut brain = if override_episode > 0 {
@@ -215,6 +187,8 @@ fn main() {
         //     brain.phase = true; // Chuyển sang tăng
         // }
 
+        let mut buff_multiplier = 1.0;
+
         if brain.phase {
             buff_multiplier = GOLDEN_RATIO;
             print!(" (PHASE: TĂNG 📈) ");
@@ -321,32 +295,21 @@ fn main() {
 
                     local_env.reset();
                     // local_brain.reset_traces(); // Removed: Traces now managed by env
-                    while !local_env.game.game_over {
+                    while !local_env.game.is_game_over() {
                         let action = if rng.random_bool(current_epsilon.into()) {
                             local_env.get_random_valid_action()
                         } else {
-                            match training_policy {
-                                TrainingPolicy::Expectimax => {
-                                    local_env.get_best_action_expectimax(&mut local_brain)
-                                }
-                                TrainingPolicy::Safe => {
-                                    local_env.get_best_action_safe(&mut local_brain)
-                                }
-                                TrainingPolicy::Afterstate => {
-                                    local_env.get_best_action_ply(&mut local_brain, 3).0
-                                    // 3 ply
-                                }
-                            }
+                            local_env.get_best_action_depth(&mut local_brain, 2).0
                         };
 
-                        if action == 100 {
+                        if action == None {
                             break;
                         }
 
-                        local_env.train_step(&mut local_brain, action, current_alpha);
+                        local_env.train_step(&mut local_brain, action.unwrap(), current_alpha);
                     }
 
-                    total_score += local_env.game.score as f64;
+                    total_score += local_env.game.calculate_score() as f64;
 
                     // Log progress (chỉ thread 0)
                     if t_id == 0 && local_ep % 2000 == 0 {
@@ -508,8 +471,7 @@ fn main() {
             gamma,
             total_target_episodes,
             best_stable_brain.total_episodes + chunk_episodes, // Offset đã tăng lên
-            training_policy,
-            hot_config.clone(), // 🔥 TRUYỀN HOT CONFIG VÀO!
+            hot_config.clone(),                                // 🔥 TRUYỀN HOT CONFIG VÀO!
         );
 
         // Lưu replay tốt nhất nếu có
@@ -688,7 +650,6 @@ fn run_evaluation_training(
     gamma: f64,
     total_target_episodes: u32,
     start_offset: u32,
-    policy: TrainingPolicy,
     hot_config: Arc<RwLock<HotLoadConfig>>,
 ) -> (f64, f64, NTupleNetwork, Option<GameReplay>) {
     let shared_brain = Arc::new(brain);
@@ -740,7 +701,7 @@ fn run_evaluation_training(
                     local_env.game.board.map(|row| row.map(|tile| tile.value));
 
                 let mut step_count = 0;
-                while !local_env.game.game_over {
+                while !local_env.game.is_game_over() {
                     step_count += 1;
 
                     let action = if current_epsilon > 0.0 && rng.random_bool(current_epsilon.into())
@@ -754,37 +715,26 @@ fn run_evaluation_training(
                                 &*local_brain_ref,
                             )
                         };
-                        local_env.get_best_action_ply(brain_ptr_mut, 3).0
+                        local_env.get_best_action_depth(brain_ptr_mut, 2).0
                     };
 
-                    if action == 100 {
+                    if action == None {
                         break;
                     }
 
-                    let action_dir = match action {
-                        0 => Direction::Up,
-                        1 => Direction::Down,
-                        2 => Direction::Left,
-                        3 => Direction::Right,
-                        _ => unreachable!(),
-                    };
-
-                    let (moved, _) = local_env.game.move_dir(action_dir);
-                    if !moved {
-                        break;
-                    }
+                    local_env.game.make_full_move(action.unwrap());
 
                     // Chỉ record replay cho ván xuất sắc để tiết kiệm RAM
-                    if local_env.game.score > 10000.0 {
+                    if local_env.game.calculate_score() > 200000.0 {
                         current_steps.push(StepData {
-                            direction: action as usize,
+                            direction: action.unwrap() as usize,
                             board: local_env.game.board.map(|row| row.map(|tile| tile.value)),
-                            score: local_env.game.score,
+                            score: local_env.game.calculate_score(),
                         });
                     }
                 }
 
-                let game_score = local_env.game.score as f64;
+                let game_score = local_env.game.calculate_score() as f64;
                 local_results.push((game_score, step_count));
 
                 if game_score > local_max_score {
@@ -801,13 +751,6 @@ fn run_evaluation_training(
             (local_results, local_best_replay)
         })
         .collect();
-
-    // --- XỬ LÝ SỐ LIỆU ---
-    let mut all_data: Vec<(f64, usize)> = results.iter().flat_map(|(res, _)| res.clone()).collect();
-
-    // Tìm Max và Avg tổng quát
-    let max = all_data.iter().map(|x| x.0).fold(0.0, f64::max);
-    let avg = all_data.iter().map(|x| x.0).sum::<f64>() / all_data.len() as f64;
 
     // --- XỬ LÝ SỐ LIỆU ---
     let all_data: Vec<(f64, usize)> = results.iter().flat_map(|(res, _)| res.clone()).collect();

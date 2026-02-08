@@ -145,7 +145,7 @@ impl Game {
         count
     }
 
-    pub fn calculate_score(&mut self) -> f64{
+    pub fn calculate_score(&self) -> f64{
         let mut total_score = 0;
         for r in 0..4 {
             for c in 0..4 {
