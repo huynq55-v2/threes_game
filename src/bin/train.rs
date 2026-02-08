@@ -43,7 +43,7 @@ struct GameReplay {
 }
 
 fn main() {
-    let ply = 1;
+    let ply = 3;
     let num_threads = 8;
     let gamma = 0.995;
     let args: Vec<String> = env::args().collect();
@@ -745,9 +745,6 @@ fn run_evaluation_training(
                 let mut step_count = 0;
                 while !local_env.game.game_over {
                     step_count += 1;
-                    if step_count > 20000 {
-                        break;
-                    }
 
                     let action = if current_epsilon > 0.0 && rng.random_bool(current_epsilon.into())
                     {
@@ -762,6 +759,10 @@ fn run_evaluation_training(
                         };
                         local_env.get_best_action_ply(brain_ptr_mut, ply + 2).0
                     };
+
+                    if action == 100 {
+                        break;
+                    }
 
                     let action_dir = match action {
                         0 => Direction::Up,
