@@ -195,7 +195,7 @@ impl Game {
 
     /// Predicts the next tile(s) to show as a hint.
     /// Returns just the hint tiles to be displayed in the UI.
-    pub fn predict_future(&mut self) -> Vec<u32> {
+    pub fn predict_future(&self) -> Vec<u32> {
         let mut hints = Vec::new();
 
         if self.future_value <= 3 {
@@ -364,6 +364,47 @@ impl Game {
                     // 4. Xoay ngược lại
                     possible_game.rotate_board(4 - rot);
                     
+                    outcomes.push(possible_game);
+                }
+            }
+        }
+        outcomes
+    }
+
+    pub fn get_all_possible_outcomes_pure(&self, dir: Direction) -> Vec<Game> {
+        if !self.can_move(dir) {
+            return Vec::new();
+        }
+
+        let mut outcomes = Vec::new();
+        let rot = self.get_rotations_needed(dir);
+
+        // 1. Giả lập cú trượt (Afterstate sơ khai)
+        let mut temp_game = self.clone();
+        temp_game.rotate_board(rot);
+        let (moved, moved_rows, _) = temp_game.shift_board_left();
+
+        if moved {
+            // 2. Lấy danh sách các giá trị có thể mọc từ Future Value
+            // Lưu ý: possible_spawn_values sẽ trả về 1 con (nếu là 1,2,3) 
+            // hoặc 1-3 con (nếu là Bonus) dựa trên future_value hiện tại
+            let possible_spawn_values = self.predict_future();
+
+            // 3. Duyệt qua các hàng có thể mọc gạch và các giá trị khả thi
+            for &row_idx in &moved_rows {
+                for &val in &possible_spawn_values {
+                    let mut possible_game = temp_game.clone();
+                    
+                    // Đặt gạch vào board (cột 3 là cột mới mọc sau khi trượt trái)
+                    possible_game.board[row_idx][3] = Tile { value: val };
+                    
+                    // QUAN TRỌNG: Cập nhật tracker ngay để các tầng sâu hơn biết con này đã ra
+                    possible_game.deck_tracker.update(val);
+
+                    // Xoay ngược lại để về hướng ban đầu
+                    possible_game.rotate_board(4 - rot);
+                    
+                    // Tối giản: Không tính score, không tính hints ở đây để tăng tốc
                     outcomes.push(possible_game);
                 }
             }

@@ -43,6 +43,7 @@ struct GameReplay {
 }
 
 fn main() {
+    let ply = 1;
     let num_threads = 8;
     let gamma = 0.995;
     let args: Vec<String> = env::args().collect();
@@ -339,12 +340,13 @@ fn main() {
                                     local_env.get_best_action_safe(&mut local_brain)
                                 }
                                 TrainingPolicy::Afterstate => {
-                                    local_env.get_best_action_afterstate(&mut local_brain)
+                                    local_env.get_best_action_ply(&mut local_brain, ply).0
+                                    // 3 ply
                                 }
                             }
                         };
 
-                        local_env.train_step(&mut local_brain, action, current_alpha);
+                        local_env.train_step(&mut local_brain, action, current_alpha, ply);
                     }
 
                     total_score += local_env.game.score as f64;
@@ -511,6 +513,7 @@ fn main() {
             best_stable_brain.total_episodes + chunk_episodes, // Offset đã tăng lên
             training_policy,
             hot_config.clone(), // 🔥 TRUYỀN HOT CONFIG VÀO!
+            ply,
         );
 
         // Lưu replay tốt nhất nếu có
@@ -691,6 +694,7 @@ fn run_evaluation_training(
     start_offset: u32,
     policy: TrainingPolicy,
     hot_config: Arc<RwLock<HotLoadConfig>>,
+    ply: u32,
 ) -> (f64, f64, NTupleNetwork, Option<GameReplay>) {
     let shared_brain = Arc::new(brain);
     let ep_per_thread = total_games / num_threads;
@@ -758,7 +762,7 @@ fn run_evaluation_training(
                                 &*local_brain_ref,
                             )
                         };
-                        local_env.get_best_action_recursive(brain_ptr_mut)
+                        local_env.get_best_action_ply(brain_ptr_mut, ply + 2).0
                     };
 
                     let action_dir = match action {
