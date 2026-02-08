@@ -47,7 +47,7 @@ pub fn get_rank_from_value(value: u32) -> u8 {
     }
 }
 
-pub fn get_value_from_rank(rank: u8) -> u32 {
+pub fn get_value_from_rank(rank: u32) -> u32 {
     // get value from rank if rank >= 1
     3 * 2u32.pow(rank as u32 - 1)
 }

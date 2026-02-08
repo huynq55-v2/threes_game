@@ -39,6 +39,7 @@ pub struct Game {
     pub future_value: u32,
     pub hints: Vec<u32>,
     pub deck_tracker: DeckTracker,
+    pub predicted_future_distribution: Vec<(u32, f64)>,
 }
 
 impl Game {
@@ -48,6 +49,7 @@ impl Game {
         let num_move = 0;
         let future_value = 0;
         let hints = Vec::new();
+        let predicted_future_distribution = Vec::new();
 
         let mut numbers = PseudoList::new(K_NUMBER_RANDOMNESS);
         numbers.add(1);
@@ -90,6 +92,7 @@ impl Game {
             future_value,
             hints,
             deck_tracker: DeckTracker::new(),
+            predicted_future_distribution,
         };
 
         game.future_value = game.get_next_value();
@@ -104,7 +107,7 @@ impl Game {
         self.board[row][col] = tile;
     }
 
-    pub fn get_highest_tile_rank(&self) -> u8 {
+    pub fn get_highest_tile_rank(&self) -> u32 {
         let mut max_rank = 0;
         for r in 0..4 {
             for c in 0..4 {
@@ -114,7 +117,7 @@ impl Game {
                 }
             }
         }
-        max_rank
+        max_rank as u32
     }
     
     pub fn get_highest_tile_value(&self) -> u32 {
@@ -207,7 +210,7 @@ impl Game {
             for i in 0..num {
                 let r_idx = rank.saturating_sub(1).saturating_sub(i);
                 let clamped_rank = r_idx.clamp(1, 11);
-                let val_to_show = get_value_from_rank(clamped_rank + 1);
+                let val_to_show = get_value_from_rank(clamped_rank as u32 + 1);
                 hints.push(val_to_show);
             }
         }
@@ -256,6 +259,7 @@ impl Game {
         valid_moves.is_empty()
     }
 
+    // use to make full move in main game instance
     pub fn make_full_move(&mut self, dir: Direction) {
         if !self.can_move(dir) {
             panic!("Invalid move");
@@ -321,20 +325,53 @@ impl Game {
     // generate all possible outcomes after make move (spawned tile, position)
     // input: an afterstate
     // output: a vector of possible outcomes
-    pub fn gen_all_possible_outcomes(&self) -> Vec<Game> {
+    pub fn gen_all_possible_outcomes(&self) -> Vec<(Game, f64)> {
         if !self.is_afterstate {
             panic!("Cannot generate outcomes from non-afterstate");
         }
 
         let mut outcomes = Vec::new();
+
+        // 1. Xác suất Vị Trí
+        let num_pos = self.possible_spawn_positions.len() as f64;
+        let p_pos = 1.0 / num_pos;
+
+        // 2. Xác suất Con Hiện Tại (Lấy từ Hint màn hình hoặc từ distribution đã lưu)
+        // ĐOẠN NÀY QUAN TRỌNG:
+        // Nếu đây là Ply 0 (Game thật): Lấy từ self.hints (chia đều).
+        // Nếu đây là Ply > 0 (Game giả lập): Lấy từ self.predicted_future_distribution.
         
-        // iterate through possible spawn positions
+        // Tuy nhiên, để code đồng nhất cho hàm gen_outcome này, 
+        // ta giả sử `self.hints` ở Node cha đã được set đúng từ distribution trước đó.
+        // (Tôi sẽ giải thích cách xử lý Hints ở phần dưới)
+        
+        // Tạm thời dùng logic chia đều Hint hiện tại để spawn xuống board
+        let p_curr_val = 1.0 / self.hints.len() as f64; 
+
+        // --- VÒNG LẶP ---
         for &pos in &self.possible_spawn_positions {
-            // iterate through hints
-            for &hint in &self.hints {
-                let mut possible_game = self.clone();
-                possible_game.set_tile_at_position(pos, Tile { value: hint });
-                outcomes.push(possible_game);
+            for &val in &self.hints {
+                
+                // A. TẠO BOARD MỚI
+                let mut next_game = self.clone();
+                next_game.set_tile_at_position(pos, Tile::new(val));
+                next_game.is_afterstate = false;
+
+                // B. UPDATE TRACKER
+                next_game.deck_tracker.update(val);
+
+                // C. LƯU TRỮ TƯƠNG LAI (KHÔNG CHIA NHÁNH, KHÔNG CHỌN ĐẠI)
+                // Lấy toàn bộ phân bố xác suất (1:20%, 2:20%...) lưu vào biến mới
+                let max_rank = next_game.get_highest_tile_rank() as u32;
+                next_game.predicted_future_distribution = next_game.deck_tracker.predict_future(max_rank);
+
+                // Lưu ý: Lúc này next_game.hints và next_game.future_value CHƯA CÓ GIÁ TRỊ ĐÚNG
+                // Chúng sẽ được xử lý khi hàm Expectimax duyệt đến Node con này.
+                
+                // D. TÍNH XÁC SUẤT CHUYỂN TRẠNG THÁI
+                let final_prob = p_pos * p_curr_val;
+
+                outcomes.push((next_game, final_prob));
             }
         }
 
