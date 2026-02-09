@@ -3,10 +3,10 @@ use crate::pseudo_list::PseudoList;
 use crate::threes_const::*;
 use crate::tile::Tile;
 use crate::tile::{get_rank_from_value, get_value_from_rank};
-use rand::Rng;
 use rand::rng;
 use rand::seq::IndexedRandom;
 use rand::seq::SliceRandom;
+use rand::Rng; // Cần thiết cho choose()
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Direction {
@@ -31,6 +31,7 @@ impl Direction {
 #[derive(Clone)]
 pub struct Game {
     pub board: [[Tile; 4]; 4],
+    pub score: f64, // Đã thêm field này
     pub is_afterstate: bool,
     pub possible_spawn_positions: Vec<usize>,
     pub num_move: u32,
@@ -50,6 +51,7 @@ impl Game {
         let future_value = 0;
         let hints = Vec::new();
         let predicted_future_distribution = Vec::new();
+        let score = 0.0;
 
         let mut numbers = PseudoList::new(K_NUMBER_RANDOMNESS);
         numbers.add(1);
@@ -83,9 +85,10 @@ impl Game {
         }
 
         let mut game = Game {
+            board,
+            score,
             is_afterstate,
             possible_spawn_positions,
-            board,
             num_move,
             numbers,
             special,
@@ -100,6 +103,8 @@ impl Game {
 
         game
     }
+
+    // --- CÁC HÀM GETTER / SETTER CƠ BẢN ---
 
     pub fn set_tile_at_position(&mut self, pos: usize, tile: Tile) {
         let row = pos / 4;
@@ -119,7 +124,7 @@ impl Game {
         }
         max_rank as u32
     }
-    
+
     pub fn get_highest_tile_value(&self) -> u32 {
         let mut max_val = 0;
         for r in 0..4 {
@@ -133,19 +138,7 @@ impl Game {
         max_val
     }
 
-    pub fn count_tiles_with_value(&self, val: u32) -> u8 {
-        let mut count = 0;
-        for r in 0..4 {
-            for c in 0..4 {
-                if self.board[r][c].value == val {
-                    count += 1;
-                }
-            }
-        }
-        count
-    }
-
-    pub fn calculate_score(&self) -> f64{
+    pub fn calculate_score(&self) -> f64 {
         let mut total_score = 0;
         for r in 0..4 {
             for c in 0..4 {
@@ -169,8 +162,9 @@ impl Game {
         flat
     }
 
+    // --- LOGIC GAME & DECK ---
+
     pub fn get_next_value(&mut self) -> u32 {
-        
         let is_bonus = if self.num_move > 21 {
             self.special.get_next() == Some(1)
         } else {
@@ -179,12 +173,9 @@ impl Game {
 
         if is_bonus {
             let board_highest_rank = self.get_highest_tile_rank();
-
             let num = board_highest_rank.saturating_sub(K_SPECIAL_DEMOTION);
 
-            if num < 2 {
-
-            } else {
+            if num >= 2 {
                 if num < 4 {
                     return get_value_from_rank(num);
                 } else {
@@ -194,8 +185,7 @@ impl Game {
                 }
             }
         }
-
-        self.numbers.get_next().unwrap()
+        self.numbers.get_next().unwrap_or(1) // Fallback an toàn
     }
 
     pub fn predict_future(&self) -> Vec<u32> {
@@ -214,31 +204,74 @@ impl Game {
                 hints.push(val_to_show);
             }
         }
-
         hints.sort();
         hints
     }
 
+    // --- LOGIC CHECK NƯỚC ĐI (TƯỜNG MINH) ---
+
+    // Helper: Kiểm tra luật gộp của Threes
+    fn can_merge_tiles(target: u32, source: u32) -> bool {
+        if source == 0 {
+            return false;
+        } // Không có gì để đẩy
+        if target == 0 {
+            return true;
+        } // Đẩy vào ô trống
+
+        // Gộp 1 + 2 = 3
+        if (target == 1 && source == 2) || (target == 2 && source == 1) {
+            return true;
+        }
+        // Gộp X + X (X >= 3)
+        if target >= 3 && target == source {
+            return true;
+        }
+        false
+    }
+
     pub fn can_move(&self, dir: Direction) -> bool {
-        let rot = self.get_rotations_needed(dir);
-
-        for r in 0..4 {
-            for c in 0..3 {
-                // Ánh xạ tọa độ ảo sang thực
-                let (r1, c1) = self.map_rotated_index(r, c, rot);
-                let (r2, c2) = self.map_rotated_index(r, c + 1, rot);
-
-                let target = self.board[r1][c1].value;
-                let source = self.board[r2][c2].value;
-
-                if source == 0 { continue; } // Không có gạch để đẩy
-                
-                // Logic merge
-                if target == 0 
-                   || (target + source == 3) // 1+2 hoặc 2+1
-                   || (target >= 3 && target == source) // X+X
-                {
-                    return true;
+        match dir {
+            Direction::Left => {
+                for r in 0..4 {
+                    for c in 0..3 {
+                        if Self::can_merge_tiles(self.board[r][c].value, self.board[r][c + 1].value)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            Direction::Right => {
+                for r in 0..4 {
+                    for c in (1..4).rev() {
+                        // 3, 2, 1
+                        if Self::can_merge_tiles(self.board[r][c].value, self.board[r][c - 1].value)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            Direction::Up => {
+                for c in 0..4 {
+                    for r in 0..3 {
+                        if Self::can_merge_tiles(self.board[r][c].value, self.board[r + 1][c].value)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            Direction::Down => {
+                for c in 0..4 {
+                    for r in (1..4).rev() {
+                        // 3, 2, 1
+                        if Self::can_merge_tiles(self.board[r][c].value, self.board[r - 1][c].value)
+                        {
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -247,84 +280,222 @@ impl Game {
 
     pub fn get_valid_moves(&self) -> Vec<Direction> {
         let mut moves = Vec::new();
-        if self.can_move(Direction::Up) { moves.push(Direction::Up); }
-        if self.can_move(Direction::Down) { moves.push(Direction::Down); }
-        if self.can_move(Direction::Left) { moves.push(Direction::Left); }
-        if self.can_move(Direction::Right) { moves.push(Direction::Right); }
+        if self.can_move(Direction::Up) {
+            moves.push(Direction::Up);
+        }
+        if self.can_move(Direction::Down) {
+            moves.push(Direction::Down);
+        }
+        if self.can_move(Direction::Left) {
+            moves.push(Direction::Left);
+        }
+        if self.can_move(Direction::Right) {
+            moves.push(Direction::Right);
+        }
         moves
     }
 
-    pub fn is_game_over(&mut self) -> bool {
-        let valid_moves = self.get_valid_moves();
-        valid_moves.is_empty()
+    pub fn is_game_over(&self) -> bool {
+        self.get_valid_moves().is_empty()
     }
 
-    // use to make full move in main game instance
-    pub fn make_full_move(&mut self, dir: Direction) {
-        if !self.can_move(dir) {
-            panic!("Invalid move");
+    // --- LOGIC THỰC HIỆN NƯỚC ĐI (CORE LOGIC) ---
+
+    // Helper: Tính kết quả gộp (Giá trị mới, Điểm thưởng)
+    fn get_merge_result(target: u32, source: u32) -> (u32, f64) {
+        if target == 0 {
+            (source, 0.0)
+        } else if target + source == 3 {
+            (3, 1.0) // Gộp ra 3 được 1 điểm (hoặc tùy chỉnh)
+        } else {
+            let new_val = target * 2;
+            (new_val, new_val as f64) // Gộp ra X được X điểm
+        }
+    }
+
+    // Helper: Xử lý logic trượt cho 1 mảng 4 phần tử (theo chiều Left)
+    fn process_line_threes(line: [u32; 4]) -> ([u32; 4], bool, f64) {
+        let mut new_line = line;
+        for i in 0..3 {
+            let target = new_line[i];
+            let source = new_line[i + 1];
+
+            if Self::can_merge_tiles(target, source) {
+                let (new_val, score) = Self::get_merge_result(target, source);
+                new_line[i] = new_val;
+                // Shift phần còn lại
+                for k in (i + 1)..3 {
+                    new_line[k] = new_line[k + 1];
+                }
+                new_line[3] = 0;
+                return (new_line, true, score);
+            }
+        }
+        (line, false, 0.0)
+    }
+
+    // 1. MOVE & MERGE (Tạo Afterstate)
+    // Trả về: (Có di chuyển ko, Danh sách index hàng/cột bị thay đổi)
+    pub fn apply_move_no_spawn(&mut self, dir: Direction) -> (bool, Vec<usize>) {
+        let mut moved_indices = Vec::new();
+        let mut total_score_gain = 0.0;
+        let mut has_moved = false;
+
+        match dir {
+            Direction::Left => {
+                for r in 0..4 {
+                    let line = [
+                        self.board[r][0].value,
+                        self.board[r][1].value,
+                        self.board[r][2].value,
+                        self.board[r][3].value,
+                    ];
+                    let (new_line, moved, score) = Self::process_line_threes(line);
+                    if moved {
+                        for c in 0..4 {
+                            self.board[r][c] = Tile::new(new_line[c]);
+                        }
+                        moved_indices.push(r);
+                        total_score_gain += score;
+                        has_moved = true;
+                    }
+                }
+            }
+            Direction::Right => {
+                for r in 0..4 {
+                    let line = [
+                        self.board[r][3].value,
+                        self.board[r][2].value,
+                        self.board[r][1].value,
+                        self.board[r][0].value,
+                    ];
+                    let (new_line, moved, score) = Self::process_line_threes(line);
+                    if moved {
+                        for c in 0..4 {
+                            self.board[r][3 - c] = Tile::new(new_line[c]);
+                        }
+                        moved_indices.push(r);
+                        total_score_gain += score;
+                        has_moved = true;
+                    }
+                }
+            }
+            Direction::Up => {
+                for c in 0..4 {
+                    let line = [
+                        self.board[0][c].value,
+                        self.board[1][c].value,
+                        self.board[2][c].value,
+                        self.board[3][c].value,
+                    ];
+                    let (new_line, moved, score) = Self::process_line_threes(line);
+                    if moved {
+                        for r in 0..4 {
+                            self.board[r][c] = Tile::new(new_line[r]);
+                        }
+                        moved_indices.push(c);
+                        total_score_gain += score;
+                        has_moved = true;
+                    }
+                }
+            }
+            Direction::Down => {
+                for c in 0..4 {
+                    let line = [
+                        self.board[3][c].value,
+                        self.board[2][c].value,
+                        self.board[1][c].value,
+                        self.board[0][c].value,
+                    ];
+                    let (new_line, moved, score) = Self::process_line_threes(line);
+                    if moved {
+                        for r in 0..4 {
+                            self.board[3 - r][c] = Tile::new(new_line[r]);
+                        }
+                        moved_indices.push(c);
+                        total_score_gain += score;
+                        has_moved = true;
+                    }
+                }
+            }
         }
 
-        let rot = self.get_rotations_needed(dir);
+        self.score += total_score_gain;
+        (has_moved, moved_indices)
+    }
 
-        // A. Xoay để đưa về hướng Left
-        self.rotate_board(rot);
+    // 2. SPAWN LOGIC
+    pub fn spawn_new_tile(&mut self, dir: Direction, moved_indices: &[usize], val: u32) {
+        if moved_indices.is_empty() {
+            return;
+        }
 
-        // B. Xử lý logic Move & Merge
-        let (_, moved_rows, _) = self.shift_board_left();
+        let mut rng = rng();
+        // Chọn ngẫu nhiên 1 hàng/cột trong số những cái đã di chuyển
+        let target_index = *moved_indices.choose(&mut rng).unwrap();
 
-        // C. Spawn gạch mới (nếu có di chuyển)
-        self.do_spawn_on_row_ends(&moved_rows);
-            
-        // Cập nhật trạng thái game
+        match dir {
+            Direction::Left => self.board[target_index][3] = Tile::new(val),
+            Direction::Right => self.board[target_index][0] = Tile::new(val),
+            Direction::Up => self.board[3][target_index] = Tile::new(val),
+            Direction::Down => self.board[0][target_index] = Tile::new(val),
+        }
+    }
+
+    // --- CÁC HÀM STATE TRANSITION (HIGH LEVEL) ---
+
+    // Dùng cho Game thật (Environment)
+    pub fn make_full_move(&mut self, dir: Direction) {
+        if !self.can_move(dir) {
+            panic!("Invalid move: {:?}", dir);
+        }
+
+        // 1. Move & Merge
+        let (has_moved, moved_indices) = self.apply_move_no_spawn(dir);
+        if !has_moved {
+            panic!("Logic Error: can_move is true but apply_move_no_spawn returned false");
+        }
+
+        // 2. Spawn (Lấy giá trị từ tương lai đã biết)
+        self.spawn_new_tile(dir, &moved_indices, self.future_value);
+
+        // 3. Update State
         self.num_move += 1;
         self.future_value = self.get_next_value();
         self.hints = self.predict_future();
-
-        // D. Xoay ngược lại về trạng thái gốc
-        self.rotate_board(4 - rot);
-
         self.is_afterstate = false;
     }
 
-    // generate board after make move but before spawn new number
+    // Dùng cho AI Search (Tạo Afterstate để đánh giá)
     pub fn gen_afterstate(&self, dir: Direction) -> Game {
         if !self.can_move(dir) {
-            panic!("Invalid move");
+            self.print_board();
+            panic!("Invalid move: {:?}", dir);
         }
 
-        // 1. Clone
-        let mut temp_game = self.clone(); 
-        
-        // 2. Rotate -> Shift -> Rotate Back
-        let rot = temp_game.get_rotations_needed(dir);
-        temp_game.rotate_board(rot);
-        
-        let (_, moved_rows, _) = temp_game.shift_board_left();
+        let mut temp_game = self.clone();
 
-        for &r in &moved_rows {
-            // 1. Tọa độ spawn luôn là cột 3 trong hệ tọa độ "trượt trái"
-            let (row_rotated, col_rotated) = (r, 3);
-            
-            // 2. Map về tọa độ gốc (xoay ngược lại 4 - rot)
-            let (orig_row, orig_col) = map_coords(row_rotated, col_rotated, 4 - rot);
-            
-            // 3. Chuyển sang index phẳng 0-15
-            let flat_index = orig_row * 4 + orig_col;
-            
-            temp_game.possible_spawn_positions.push(flat_index); 
+        // 1. Thực hiện Move (chưa spawn)
+        let (_, moved_indices) = temp_game.apply_move_no_spawn(dir);
+
+        // 2. Tính toán các vị trí có thể spawn (Để phục vụ Chance Node)
+        // Logic tường minh, không map coords phức tạp
+        temp_game.possible_spawn_positions.clear();
+        for &idx in &moved_indices {
+            let flat_pos = match dir {
+                Direction::Left => idx * 4 + 3,  // Hàng idx, Cột 3
+                Direction::Right => idx * 4 + 0, // Hàng idx, Cột 0
+                Direction::Up => 3 * 4 + idx,    // Hàng 3, Cột idx
+                Direction::Down => 0 * 4 + idx,  // Hàng 0, Cột idx
+            };
+            temp_game.possible_spawn_positions.push(flat_pos);
         }
-        
-        temp_game.rotate_board(4 - rot);
 
         temp_game.is_afterstate = true;
-
         temp_game
     }
 
-    // generate all possible outcomes after make move (spawned tile, position)
-    // input: an afterstate
-    // output: a vector of possible outcomes
+    // Sinh ra các trạng thái Full State từ Afterstate (Dùng cho Chance Node)
     pub fn gen_all_possible_outcomes(&self) -> Vec<(Game, f64)> {
         if !self.is_afterstate {
             panic!("Cannot generate outcomes from non-afterstate");
@@ -332,43 +503,27 @@ impl Game {
 
         let mut outcomes = Vec::new();
 
-        // 1. Xác suất Vị Trí
+        // P(Vị trí)
         let num_pos = self.possible_spawn_positions.len() as f64;
         let p_pos = 1.0 / num_pos;
 
-        // 2. Xác suất Con Hiện Tại (Lấy từ Hint màn hình hoặc từ distribution đã lưu)
-        // ĐOẠN NÀY QUAN TRỌNG:
-        // Nếu đây là Ply 0 (Game thật): Lấy từ self.hints (chia đều).
-        // Nếu đây là Ply > 0 (Game giả lập): Lấy từ self.predicted_future_distribution.
-        
-        // Tuy nhiên, để code đồng nhất cho hàm gen_outcome này, 
-        // ta giả sử `self.hints` ở Node cha đã được set đúng từ distribution trước đó.
-        // (Tôi sẽ giải thích cách xử lý Hints ở phần dưới)
-        
-        // Tạm thời dùng logic chia đều Hint hiện tại để spawn xuống board
-        let p_curr_val = 1.0 / self.hints.len() as f64; 
+        // P(Giá trị) - Tạm tính đều theo Hints hiện tại
+        let p_curr_val = 1.0 / self.hints.len() as f64;
 
-        // --- VÒNG LẶP ---
         for &pos in &self.possible_spawn_positions {
             for &val in &self.hints {
-                
-                // A. TẠO BOARD MỚI
+                // A. Clone ra trạng thái mới
                 let mut next_game = self.clone();
                 next_game.set_tile_at_position(pos, Tile::new(val));
                 next_game.is_afterstate = false;
 
-                // B. UPDATE TRACKER
+                // B. Update Tracker & Predict Future Distribution
                 next_game.deck_tracker.update(val);
-
-                // C. LƯU TRỮ TƯƠNG LAI (KHÔNG CHIA NHÁNH, KHÔNG CHỌN ĐẠI)
-                // Lấy toàn bộ phân bố xác suất (1:20%, 2:20%...) lưu vào biến mới
                 let max_rank = next_game.get_highest_tile_rank() as u32;
-                next_game.predicted_future_distribution = next_game.deck_tracker.predict_future(max_rank);
+                next_game.predicted_future_distribution =
+                    next_game.deck_tracker.predict_future(max_rank);
 
-                // Lưu ý: Lúc này next_game.hints và next_game.future_value CHƯA CÓ GIÁ TRỊ ĐÚNG
-                // Chúng sẽ được xử lý khi hàm Expectimax duyệt đến Node con này.
-                
-                // D. TÍNH XÁC SUẤT CHUYỂN TRẠNG THÁI
+                // C. Tính xác suất tổng hợp
                 let final_prob = p_pos * p_curr_val;
 
                 outcomes.push((next_game, final_prob));
@@ -378,134 +533,12 @@ impl Game {
         outcomes
     }
 
-    // Duyệt từng hàng, xử lý dồn sang trái
-    pub fn shift_board_left(&mut self) -> (bool, Vec<usize>, Vec<u8>) {
-        let mut moved_rows = Vec::new();
-        let mut merged_ranks = Vec::new(); // <--- Danh sách thu hoạch
-
+    pub fn print_board(&self) {
         for r in 0..4 {
-            let (moved, rank_opt) = self.process_single_row(r);
-            if moved {
-                moved_rows.push(r);
-                if let Some(rank) = rank_opt {
-                    merged_ranks.push(rank);
-                }
+            for c in 0..4 {
+                print!("{:4} ", self.board[r][c].value);
             }
+            println!();
         }
-
-        (!moved_rows.is_empty(), moved_rows, merged_ranks)
-    }
-
-    // Xử lý logic Threes cho 1 hàng duy nhất: Chỉ merge/move cặp đầu tiên tìm thấy
-    fn process_single_row(&mut self, r: usize) -> (bool, Option<u8>) {
-        for c in 0..3 {
-            let target_val = self.board[r][c].value;
-            let source_val = self.board[r][c + 1].value;
-
-            if source_val == 0 { continue; }
-
-            // Check merge inline cho gọn
-            let (new_val, is_merge) = if target_val == 0 {
-                (source_val, false) // Chỉ là di chuyển vào ô trống
-            } else if target_val + source_val == 3 {
-                (3, true) // Merge 1+2
-            } else if target_val >= 3 && target_val == source_val {
-                (target_val * 2, true) // Merge X+X
-            } else {
-                continue; // Không merge được cặp này, xét cặp tiếp theo
-            };
-
-            // Thực hiện Move & Shift
-            self.board[r][c] = Tile::new(new_val);
-            
-            // Kéo đuôi phía sau lên 1 nấc (Shift Left phần còn lại)
-            for k in (c + 1)..3 {
-                self.board[r][k] = self.board[r][k + 1];
-            }
-            self.board[r][3] = Tile::new(0); // Ô cuối luôn trống
-
-            // Tính Rank trả về nếu là Merge
-            let merged_rank = if is_merge {
-                let r = get_rank_from_value(new_val);
-                Some(r)
-            } else {
-                None
-            };
-
-            return (true, merged_rank);
-        }
-        (false, None)
-    }
-
-    pub fn get_actual_spawn_value(&self) -> u32 {
-        // Thêm dấu * ở đầu để chuyển &u32 thành u32
-        *self.hints.choose(&mut rng()).unwrap()
-    }
-
-    pub fn spawn_at(&mut self, row: usize, col: usize, val: u32) {
-        let t = Tile::new(val);
-        self.board[row][col] = t;
-    }
-
-    pub fn do_spawn_on_row_ends(&mut self, moved_rows: &[usize]) {
-        if moved_rows.is_empty() { return; }
-
-        let mut rng = rng();
-        let target_row = *moved_rows.choose(&mut rng).unwrap();
-        
-        // Gọi hàm lấy giá trị
-        let val = self.get_actual_spawn_value();
-        
-        // Gọi hàm thực thi (mặc định spawn ở cột cuối - cột 3)
-        self.spawn_at(target_row, 3, val);
-    }
-
-    // Helper: Lấy số lần xoay cần thiết
-    pub fn get_rotations_needed(&self, dir: Direction) -> u8 {
-        match dir {
-            Direction::Left => 0,
-            Direction::Down => 1,
-            Direction::Right => 2,
-            Direction::Up => 3,
-        }
-    }
-
-    // Helper: Xoay board k lần 90 độ
-    pub fn rotate_board(&mut self, times: u8) {
-        let k = times % 4;
-        if k == 0 { return; }
-        
-        // Dùng biến tạm để swap. 4x4 stack allocation rất rẻ.
-        for _ in 0..k {
-            let mut new_board = [[Tile::new(0); 4]; 4];
-            for r in 0..4 {
-                for c in 0..4 {
-                    new_board[c][3 - r] = self.board[r][c];
-                }
-            }
-            self.board = new_board;
-        }
-    }
-
-    // Helper: Map index (giữ nguyên vì tối ưu)
-    fn map_rotated_index(&self, r: usize, c: usize, rot: u8) -> (usize, usize) {
-        match rot % 4 {
-            0 => (r, c),
-            1 => (3 - c, r),
-            2 => (3 - r, 3 - c),
-            3 => (c, 3 - r),
-            _ => unreachable!(),
-        }
-    }
-}
-
-// Helper: Map tọa độ
-fn map_coords(row: usize, col: usize, rot: u8) -> (usize, usize) {
-    match rot % 4 {
-        0 => (row, col),
-        1 => (3 - col, row),
-        2 => (3 - row, 3 - col),
-        3 => (col, 3 - row),
-        _ => unreachable!(),
     }
 }

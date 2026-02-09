@@ -128,15 +128,12 @@ impl ThreesEnv {
                 val = self.search_chance_node(&after_game, depth - 1, brain);
             }
 
-            if val > best_val {
+            if best_action.is_none() || val > best_val {
                 best_val = val;
                 best_action = Some(dir);
             }
         }
 
-        if best_action.is_none() {
-            return (None, -1_000_000.0);
-        }
         (best_action, best_val)
     }
 
@@ -148,7 +145,7 @@ impl ThreesEnv {
         let outcomes = after_state.gen_all_possible_outcomes();
 
         if outcomes.is_empty() {
-            return -1_000_000.0;
+            unreachable!()
         }
 
         let mut total_expected_score = 0.0;

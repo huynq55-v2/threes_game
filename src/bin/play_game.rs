@@ -95,7 +95,7 @@ impl RenderState {
         Self {
             grid,
             next_hints: game.hints.clone(),
-            score: game.score,
+            score: game.calculate_score(),
         }
     }
 }
@@ -527,12 +527,12 @@ fn draw_game_over_overlay(score: f64, max_tile: u32) {
 // ============================================================================
 // AI LOGIC
 // ============================================================================
-fn get_ai_action(env: &ThreesEnv, brain: &NTupleNetwork, epsilon: f64) -> u32 {
+fn get_ai_action(env: &ThreesEnv, brain: &NTupleNetwork, epsilon: f64) -> Option<Direction> {
     let random_val: f64 = rand::gen_range(0.0, 1.0);
     if random_val < epsilon {
         env.get_random_valid_action()
     } else {
-        env.get_best_action_ply(brain, 7).0
+        env.get_best_action_depth(brain, 2).0
     }
 }
 
@@ -597,8 +597,7 @@ async fn main() {
 
                     // Init replay state
                     if let Some(ref r) = replay_data {
-                        env.game.score = 0.0; // Start
-                                              // Set board to initial
+                        // Set board to initial
                         for row in 0..4 {
                             for col in 0..4 {
                                 env.game.board[row][col].value = r.initial_board[row][col];
@@ -661,7 +660,6 @@ async fn main() {
                                     env.game.board[row][col].value = r.initial_board[row][col];
                                 }
                             }
-                            env.game.score = 0.0;
                         } else {
                             let step_idx = replay_step - 1;
                             let step = &r.steps[step_idx];
@@ -670,7 +668,6 @@ async fn main() {
                                     env.game.board[row][col].value = step.board[row][col];
                                 }
                             }
-                            env.game.score = step.score;
                         }
 
                         // Update visual immediately (no smooth transition for replay yet)
@@ -698,19 +695,19 @@ async fn main() {
             }
 
             let manual_action = if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W) {
-                Some(0)
+                Some(Direction::Up)
             } else if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S) {
-                Some(1)
+                Some(Direction::Down)
             } else if is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::A) {
-                Some(2)
+                Some(Direction::Left)
             } else if is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::D) {
-                Some(3)
+                Some(Direction::Right)
             } else {
                 None
             };
 
             // Process Move if not animating ...
-            let can_input = animation_t >= 1.0 && !env.game.game_over;
+            let can_input = animation_t >= 1.0 && !env.game.is_game_over();
 
             if can_input {
                 let mut action = None;
@@ -721,23 +718,15 @@ async fn main() {
                     let current_time = get_time();
                     if current_time - last_ai_move_time >= (1.0 / ai_speed as f64) {
                         if let Some(ref b) = brain {
-                            action = Some(get_ai_action(&env, b, EPSILON));
+                            action = get_ai_action(&env, b, EPSILON);
                         } else {
-                            action = Some(env.get_random_valid_action());
+                            action = env.get_random_valid_action();
                         }
                         last_ai_move_time = current_time;
                     }
                 }
 
-                if let Some(act) = action {
-                    let dir = match act {
-                        0 => Direction::Up,
-                        1 => Direction::Down,
-                        2 => Direction::Left,
-                        3 => Direction::Right,
-                        _ => Direction::Up,
-                    };
-
+                if let Some(dir) = action {
                     if !env.game.can_move(dir) {
                         unreachable!("AI chose an invalid move");
                     }
@@ -747,8 +736,7 @@ async fn main() {
                         let mut transition = calculate_transition(&env.game, dir);
 
                         // EXECUTE MOVE
-                        env.game.move_dir(dir);
-                        env.game.check_game_over();
+                        env.game.make_full_move(dir);
 
                         // FIND SPAWN Logic...
                         let mut predicted_grid = [[0u32; 4]; 4];
@@ -907,8 +895,11 @@ async fn main() {
             }
         }
 
-        if env.game.game_over {
-            draw_game_over_overlay(env.game.score, env.game.get_highest_tile_value());
+        if env.game.is_game_over() {
+            draw_game_over_overlay(
+                env.game.calculate_score(),
+                env.game.get_highest_tile_value(),
+            );
         }
 
         next_frame().await

@@ -299,7 +299,7 @@ fn main() {
                         let action = if rng.random_bool(current_epsilon.into()) {
                             local_env.get_random_valid_action()
                         } else {
-                            local_env.get_best_action_depth(&mut local_brain, 2).0
+                            local_env.get_best_action_depth(&local_brain, 1).0
                         };
 
                         if action == None {
@@ -704,6 +704,7 @@ fn run_evaluation_training(
                 while !local_env.game.is_game_over() {
                     step_count += 1;
 
+                    let mut value = 0.0;
                     let action = if current_epsilon > 0.0 && rng.random_bool(current_epsilon.into())
                     {
                         local_env.get_random_valid_action()
@@ -715,7 +716,9 @@ fn run_evaluation_training(
                                 &*local_brain_ref,
                             )
                         };
-                        local_env.get_best_action_depth(brain_ptr_mut, 2).0
+                        let action;
+                        (action, value) = local_env.get_best_action_depth(brain_ptr_mut, 1);
+                        action
                     };
 
                     if action == None {
@@ -725,7 +728,7 @@ fn run_evaluation_training(
                     local_env.game.make_full_move(action.unwrap());
 
                     // Chỉ record replay cho ván xuất sắc để tiết kiệm RAM
-                    if local_env.game.calculate_score() > 200000.0 {
+                    if local_env.game.calculate_score() > 0.0 {
                         current_steps.push(StepData {
                             direction: action.unwrap() as usize,
                             board: local_env.game.board.map(|row| row.map(|tile| tile.value)),
