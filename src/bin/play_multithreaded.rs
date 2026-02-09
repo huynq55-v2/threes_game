@@ -64,19 +64,13 @@ fn main() {
             // We need to access get_best_action_recursive which takes &self and &NTupleNetwork
             // It doesn't modify brain, so we can pass it directly.
 
-            while !env.game.game_over {
+            while !env.game.is_game_over() {
                 // Epsilon greedy (e=0 -> always best)
                 // We use 0.0 directly as requested
 
-                let action = env.get_best_action_ply(&brain_ref, 5).0;
+                let action = env.get_best_action_depth(&brain_ref, 3).0;
 
-                let (moved, _) = env.game.move_dir(match action {
-                    0 => Direction::Up,
-                    1 => Direction::Down,
-                    2 => Direction::Left,
-                    3 => Direction::Right,
-                    _ => unreachable!(),
-                });
+                env.game.make_full_move(action.unwrap());
 
                 // if !moved {
                 //     // Check game over strictly if move failed
