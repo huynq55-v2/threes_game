@@ -2,11 +2,13 @@ use crate::game::{Direction, Game};
 use crate::n_tuple_network::NTupleNetwork;
 use crate::pbt::TrainingConfig;
 use rand::seq::IndexedRandom;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
+#[derive(Clone)]
 pub struct ThreesEnv {
     pub game: Game,
 
-    gamma: f64,
+    pub gamma: f64,
     pub config: TrainingConfig,
 
     pub traces: Vec<Vec<f64>>,
@@ -204,6 +206,104 @@ impl ThreesEnv {
             return -1_000_000.0;
         }
         best_val
+    }
+
+    // --- 1. ENTRY POINT: CHẠY SONG SONG (Dùng hàm này để Eval) ---
+    pub fn get_best_action_depth_parallel(
+        &self,
+        brain: &NTupleNetwork,
+        depth: u32,
+    ) -> (Option<Direction>, f64) {
+        let mut best_val = f64::NEG_INFINITY;
+        let mut best_action: Option<Direction> = None;
+        let mut can_move_any = false;
+
+        let current_score = self.game.score;
+
+        let directions = [
+            Direction::Up,
+            Direction::Down,
+            Direction::Left,
+            Direction::Right,
+        ];
+
+        // Duyệt tuần tự 4 hướng ở Root (vì chỉ có 4 cái, par_iter ko hiệu quả lắm)
+        // Nhưng bên trong loop này sẽ gọi hàm xử lý song song
+        for &dir in &directions {
+            if self.game.can_move(dir) {
+                can_move_any = true;
+
+                // 1. Tạo Afterstate
+                let next_after_game = self.game.gen_afterstate(dir);
+
+                // 2. Tính Reward tức thì (Quan trọng!)
+                let reward = next_after_game.score - current_score;
+
+                // 3. Tính Future Value (SONG SONG HÓA Ở ĐÂY)
+                let future_val = if depth <= 1 {
+                    brain.predict_game(&next_after_game)
+                } else {
+                    // Gọi hàm Chance Node đặc biệt có Rayon
+                    self.search_chance_node_parallel(&next_after_game, depth - 1, brain)
+                };
+
+                let total_val = reward + future_val;
+
+                // Logic chọn best action
+                if best_action.is_none() || total_val > best_val {
+                    best_val = total_val;
+                    best_action = Some(dir);
+                }
+            }
+        }
+
+        if !can_move_any {
+            return (None, -1_000_000.0);
+        }
+
+        (best_action, best_val)
+    }
+
+    // --- 2. PARALLEL CHANCE NODE (Chỉ dùng cho lớp trên cùng) ---
+    fn search_chance_node_parallel(
+        &self,
+        after_state: &Game,
+        depth: u32,
+        brain: &NTupleNetwork,
+    ) -> f64 {
+        let outcomes = after_state.gen_all_possible_outcomes();
+
+        if outcomes.is_empty() {
+            return -1_000_000.0;
+        }
+
+        // --- RAYON PARALLEL ITERATOR ---
+        // Sử dụng par_iter để chia nhỏ các outcomes cho 8 core xử lý
+        // map: tính toán từng nhánh
+        // sum: cộng dồn kết quả lại (Expectation)
+        let total_expected_score: f64 = outcomes
+            .into_par_iter()
+            .map(|(mut outcome_game, prob_outcome)| {
+                // Logic bên trong chạy trên Thread riêng biệt
+
+                // A. Đồng bộ Hints (từ distribution dự đoán)
+                outcome_game.hints = outcome_game
+                    .predicted_future_distribution
+                    .iter()
+                    .map(|(val, _)| *val)
+                    .collect();
+
+                // B. Gọi xuống Move Node (Tuần tự - Sequential)
+                // Tại sao tuần tự? Vì ta đã chia nhỏ task ở đây rồi,
+                // chia nhỏ tiếp sẽ gây overhead quản lý thread.
+                let val = self.search_move_node(&outcome_game, depth, brain);
+
+                // Trả về giá trị có trọng số
+                prob_outcome * val
+            })
+            .sum(); // Rayon tự động cộng dồn song song cực nhanh
+
+        total_expected_score
     }
 
     pub fn train_step(

@@ -532,7 +532,7 @@ fn get_ai_action(env: &ThreesEnv, brain: &NTupleNetwork, epsilon: f64) -> Option
     if random_val < epsilon {
         env.get_random_valid_action()
     } else {
-        env.get_best_action_depth(brain, 2).0
+        env.get_best_action_depth_parallel(brain, 5).0
     }
 }
 
@@ -551,7 +551,7 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    let brain = match NTupleNetwork::load_from_msgpack("brain_ep_4880000.msgpack") {
+    let brain = match NTupleNetwork::load_from_msgpack("brain_ep_1200000.msgpack") {
         Ok(b) => {
             println!("✅ Loaded brain successfully!");
             Some(b)
