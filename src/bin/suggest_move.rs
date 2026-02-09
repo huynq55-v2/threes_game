@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
-use threes_rs::deck_tracker::DeckTracker;
+use threes_rs::deck_tracker::{get_rank_from_value, DeckTracker};
 use threes_rs::game::Direction;
 use threes_rs::n_tuple_network::NTupleNetwork;
 use threes_rs::threes_env::ThreesEnv;
@@ -123,9 +123,10 @@ async fn main() -> std::io::Result<()> {
                     // BƯỚC 3: DỰ ĐOÁN TƯƠNG LAI (CHO VÒNG SAU CHECK)
                     // ==========================================
 
-                    let max_rank = env.game.get_highest_tile_rank();
+                    let max_value = env.game.get_highest_tile_value();
+                    let max_rank = get_rank_from_value(max_value);
                     // Dự đoán: Sau con Hint này, túi bài còn lại những gì?
-                    let predictions = env.game.deck_tracker.predict_future(max_rank - 1); // minus 1 because we don't know how to calculate real rank that predict_future need
+                    let predictions = env.game.deck_tracker.predict_future(max_rank);
 
                     // In ra để người dùng xem
                     print!("🔮 Túi bài sắp tới: ");

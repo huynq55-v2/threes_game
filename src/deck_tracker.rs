@@ -1,23 +1,37 @@
+use std::cmp::max;
 use std::collections::HashMap;
 
-// Các hằng số helper
-fn get_value_from_rank(rank: u32) -> u32 {
+// Helper: Config game gốc
+const K_SPECIAL_DEMOTION: u32 = 3;
+
+pub fn get_value_from_rank(rank: u32) -> u32 {
     if rank == 0 {
         return 0;
     }
-    3 * 2u32.pow(rank - 1)
+    3 * (1 << (rank - 1)) // Tương đương 3 * 2^(rank-1)
+}
+
+pub fn get_rank_from_value(value: u32) -> u32 {
+    if value <= 2 {
+        return 0;
+    } // 1, 2 không có rank trong logic này
+    if value == 3 {
+        return 1;
+    }
+    // log2(value/3) + 1. Ví dụ 6 -> 2, 12 -> 3
+    (value as f64 / 3.0).log2() as u32 + 1
 }
 
 #[derive(Clone)]
 pub struct DeckTracker {
-    // Túi 12 (Basic Bag) - Luôn chạy nền
+    // Túi 12 (Basic Bag)
     basic_counts: [u8; 4], // Index 1, 2, 3
     total_basic_remaining: u8,
 
-    // Túi 21 (Bonus Bag) - Chỉ kích hoạt sau Move 21
+    // Túi 21 (Bonus Bag)
     moves_since_start: u32,
-    bonus_cycle_pos: u8,      // 1..21
-    has_bonus_in_cycle: bool, // Chu kỳ này đã ra Bonus chưa?
+    bonus_cycle_pos: u8,
+    has_bonus_in_cycle: bool,
 }
 
 impl DeckTracker {
@@ -26,7 +40,7 @@ impl DeckTracker {
             basic_counts: [0, 4, 4, 4],
             total_basic_remaining: 12,
             moves_since_start: 0,
-            bonus_cycle_pos: 0, // 0 nghĩa là chưa kích hoạt
+            bonus_cycle_pos: 0,
             has_bonus_in_cycle: false,
         }
     }
@@ -34,24 +48,23 @@ impl DeckTracker {
     pub fn update(&mut self, spawned_value: u32) {
         self.moves_since_start += 1;
 
-        // 1. Cập nhật Túi Basic (1, 2, 3)
-        // Dù là Bonus hay Basic thì khi ra 1,2,3 nó đều trừ vào kho Basic
-        // (Theo cơ chế fallback: Bonus ra 1,2,3 vẫn tính là rút Basic)
+        // 1. Logic trừ Basic Deck (Fallback mechanic)
+        // Bất kể nguồn gốc (Basic hay Bonus), nếu ra 1,2,3 thì đều trừ vào túi 12
         if spawned_value <= 3 {
             let idx = spawned_value as usize;
             if self.basic_counts[idx] > 0 {
                 self.basic_counts[idx] -= 1;
                 self.total_basic_remaining -= 1;
             }
+            // Reset túi 12 nếu hết
             if self.total_basic_remaining == 0 {
                 self.basic_counts = [0, 4, 4, 4];
                 self.total_basic_remaining = 12;
             }
         }
 
-        // 2. Cập nhật Túi Bonus (Chỉ sau move 21)
+        // 2. Logic Bonus Cycle (21 moves)
         if self.moves_since_start > 21 {
-            // Nếu mới chuyển từ 21 sang 22, khởi tạo chu kỳ
             if self.bonus_cycle_pos == 0 {
                 self.bonus_cycle_pos = 1;
                 self.has_bonus_in_cycle = false;
@@ -59,12 +72,11 @@ impl DeckTracker {
                 self.bonus_cycle_pos += 1;
             }
 
-            // Nếu ra quân >= 6, đánh dấu là đã nổ Bonus
+            // Nếu ra tile >= 6 (Rank >= 2), chắc chắn là Bonus
             if spawned_value >= 6 {
                 self.has_bonus_in_cycle = true;
             }
 
-            // Hết chu kỳ 21, reset
             if self.bonus_cycle_pos > 21 {
                 self.bonus_cycle_pos = 1;
                 self.has_bonus_in_cycle = false;
@@ -72,44 +84,44 @@ impl DeckTracker {
         }
     }
 
-    /// Hàm dự đoán (Dùng cho Expectimax)
+    /// Hàm dự đoán tương lai (Đã sửa logic 2 tầng RNG)
     pub fn predict_future(&self, max_tile_rank: u32) -> Vec<(u32, f64)> {
         let mut prob_map: HashMap<u32, f64> = HashMap::new();
 
-        // A. Tính xác suất lượt này là lượt Bonus (P_bonus_slot)
+        // --- BƯỚC 1: TÍNH XÁC SUẤT CÁC SLOT (Basic vs Bonus) ---
+
         let mut p_bonus_slot = 0.0;
 
-        // CHỈ KÍCH HOẠT KHI QUA 21 NƯỚC ĐẦU
+        // Chỉ kích hoạt Bonus Slot sau move 21
         if self.moves_since_start > 21 {
             if self.has_bonus_in_cycle {
-                p_bonus_slot = 0.0; // Đã ra rồi thì thôi
+                p_bonus_slot = 0.0; // Đã ra rồi thì các slot còn lại là Basic
             } else {
-                // Xác suất = 1 / số lượng slot còn lại trong chu kỳ
-                let remaining = 21.0 - self.bonus_cycle_pos as f64 + 1.0;
-                p_bonus_slot = 1.0 / remaining;
+                let remaining_slots = 21.0 - self.bonus_cycle_pos as f64 + 1.0;
+                p_bonus_slot = 1.0 / remaining_slots;
             }
         }
 
-        // B. Logic Fallback (Code C# Unity)
-        // int num = Mathf.Max(GetHighestRank() - 3, 0);
-        let num = if max_tile_rank >= 3 {
-            max_tile_rank - 3
+        // --- BƯỚC 2: XÁC ĐỊNH ANCHOR RANK (GetNextValue) ---
+
+        // num = giới hạn trên của Rank có thể spawn
+        // Logic Unity: Mathf.Max(GetHighestRank() - kSpecialDemotion, 0)
+        let num = if max_tile_rank >= K_SPECIAL_DEMOTION {
+            max_tile_rank - K_SPECIAL_DEMOTION
         } else {
             0
         };
 
-        // Điều kiện fallback: num < 2 (Tức là Max Tile < 48 / Rank 5)
-        // Nếu fallback, Bonus slot biến thành lượt rút thường
-        let is_fallback = num < 2;
+        // Fallback Logic: Nếu Rank quá thấp (< 2), Bonus Slot bị hủy -> Biến thành Basic
+        if num < 2 {
+            // p_bonus_slot được chuyển sang cho Basic
+            // p_basic_total = (1.0 - p_bonus) + p_bonus = 1.0
+            p_bonus_slot = 0.0;
+        }
 
-        // C. Xác suất còn lại dành cho Basic
-        let p_basic_total = if is_fallback {
-            1.0 // Bonus slot bị hủy, dồn hết về Basic
-        } else {
-            1.0 - p_bonus_slot
-        };
+        let p_basic_total = 1.0 - p_bonus_slot;
 
-        // --- NHÁNH 1: BASIC TILES (1, 2, 3) ---
+        // --- NHÁNH 1: BASIC DECK (1, 2, 3) ---
         if p_basic_total > 0.0 && self.total_basic_remaining > 0 {
             for val in 1..=3 {
                 let count = self.basic_counts[val as usize];
@@ -120,35 +132,37 @@ impl DeckTracker {
             }
         }
 
-        // --- NHÁNH 2: BONUS TILES (>= 24) ---
-        // Chỉ ra Bonus khi KHÔNG fallback và TRÚNG slot bonus
-        if !is_fallback && p_bonus_slot > 0.0 {
-            // Logic C#: if (num < 4) return GetValue(num);
-            // else return Random(4, num + 1);
+        // --- NHÁNH 2: BONUS DECK (2 Tầng RNG) ---
+        if p_bonus_slot > 0.0 {
+            // A. Xác định các Anchor Rank có thể xảy ra (futureValue)
+            // Logic Unity:
+            // if (num < 4) return GetValue(num); -> Chỉ có 1 anchor là 'num'
+            // else return GetValue(Random.Range(4, num + 1)); -> Anchor từ 4 đến num
 
-            // Lưu ý: num < 2 đã xử lý ở trên (fallback).
-            // Ở đây chỉ còn num >= 2.
-
-            if num < 4 {
-                // Rank 5 (48) -> num=2 -> Value 6
-                // Rank 6 (96) -> num=3 -> Value 12
-                // NHƯNG logic C# của Huy bảo Random(4, ...).
-                // Value 6 (rank 2) < 4? Đúng. Value 12 (rank 3) < 4? Đúng.
-                // Vậy đoạn này vẫn trả về 6 hoặc 12 chuẩn.
-
-                let val = get_value_from_rank(num);
-                *prob_map.entry(val).or_insert(0.0) += p_bonus_slot;
+            let anchor_ranks: Vec<u32> = if num < 4 {
+                vec![num] // num=2 hoặc num=3
             } else {
-                // Max Rank >= 7 (192) -> num >= 4
-                // Dải random từ Rank 4 (24) đến Rank num
-                let start_rank = 4; // Rank 4 là con 24
-                let end_rank = num;
-                let count = (end_rank - start_rank + 1) as f64;
+                (4..=num).collect() // num >= 4
+            };
 
-                let p_each = p_bonus_slot / count;
-                for r in start_rank..=end_rank {
+            // Xác suất chia đều cho các Anchor
+            let p_per_anchor = p_bonus_slot / anchor_ranks.len() as f64;
+
+            // B. Thực hiện Downgrade cho từng Anchor (DoSpawn)
+            for &anchor_rank in &anchor_ranks {
+                // Logic DoSpawn:
+                // Range spawn: [max(2, rank - demotion + 1), rank]
+                let min_spawn_rank = max(2, anchor_rank.saturating_sub(K_SPECIAL_DEMOTION) + 1);
+                let max_spawn_rank = anchor_rank;
+
+                let range_size = (max_spawn_rank - min_spawn_rank + 1) as f64;
+
+                // Chia xác suất của Anchor này xuống các Tile con
+                let p_final_per_tile = p_per_anchor / range_size;
+
+                for r in min_spawn_rank..=max_spawn_rank {
                     let val = get_value_from_rank(r);
-                    *prob_map.entry(val).or_insert(0.0) += p_each;
+                    *prob_map.entry(val).or_insert(0.0) += p_final_per_tile;
                 }
             }
         }
