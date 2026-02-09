@@ -717,7 +717,7 @@ fn run_evaluation_training(
                             )
                         };
                         let action;
-                        (action, value) = local_env.get_best_action_depth(brain_ptr_mut, 1);
+                        (action, value) = local_env.get_best_action_depth(brain_ptr_mut, 3);
                         action
                     };
 

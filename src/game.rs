@@ -425,7 +425,7 @@ impl Game {
     }
 
     // 2. SPAWN LOGIC
-    pub fn spawn_new_tile(&mut self, dir: Direction, moved_indices: &[usize], val: u32) {
+    pub fn spawn_new_tile(&mut self, dir: Direction, moved_indices: &[usize], vals: Vec<u32>) {
         if moved_indices.is_empty() {
             return;
         }
@@ -433,6 +433,11 @@ impl Game {
         let mut rng = rng();
         // Chọn ngẫu nhiên 1 hàng/cột trong số những cái đã di chuyển
         let target_index = *moved_indices.choose(&mut rng).unwrap();
+
+        // random val from vals
+        let val = *vals.choose(&mut rng).unwrap();
+
+        self.deck_tracker.update(val);
 
         match dir {
             Direction::Left => self.board[target_index][3] = Tile::new(val),
@@ -456,8 +461,8 @@ impl Game {
             panic!("Logic Error: can_move is true but apply_move_no_spawn returned false");
         }
 
-        // 2. Spawn (Lấy giá trị từ tương lai đã biết)
-        self.spawn_new_tile(dir, &moved_indices, self.future_value);
+        // 2. Spawn tile in hints
+        self.spawn_new_tile(dir, &moved_indices, self.hints.clone());
 
         // 3. Update State
         self.num_move += 1;

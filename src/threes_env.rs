@@ -137,51 +137,34 @@ impl ThreesEnv {
         (best_action, best_val)
     }
 
-    // --- CHANCE NODE (Nút tính xác suất) ---
-    // Input: Afterstate (đã có predicted_future_distribution từ bước gen_outcomes)
-    // Nhiệm vụ: Tính giá trị trung bình (Expectation)
     fn search_chance_node(&self, after_state: &Game, depth: u32, brain: &NTupleNetwork) -> f64 {
-        // 1. Sinh ra các kịch bản Spawn (Vị trí x Hint hiện tại)
         let outcomes = after_state.gen_all_possible_outcomes();
 
         if outcomes.is_empty() {
-            unreachable!()
+            return -1_000_000.0;
         }
 
         let mut total_expected_score = 0.0;
+        let mut sum_prob = 0.0; // Biến dùng để chứng minh
 
-        // 2. Duyệt qua từng kịch bản Spawn (Vị trí đã xác định)
         for (mut outcome_game, prob_outcome) in outcomes {
-            // Lấy phân phối xác suất tương lai đã lưu
-            let dist = &outcome_game.predicted_future_distribution;
+            // Cộng dồn xác suất để kiểm tra
+            sum_prob += prob_outcome;
 
-            // SAFETY CHECK: Nếu logic đúng thì không bao giờ rỗng ở depth này
-            if dist.is_empty() {
-                unreachable!("Logic Error: Chance node must have future distribution");
-            }
+            // Đồng bộ Hints cho lớp dưới
+            outcome_game.hints = outcome_game
+                .predicted_future_distribution
+                .iter()
+                .map(|(val, _)| *val)
+                .collect();
 
-            // 3. TÍNH KỲ VỌNG CỦA OUTCOME NÀY
-            // Value = Sum( P(next_val) * Score(next_val) )
-            let mut outcome_value = 0.0;
+            let val = self.search_move_node(&outcome_game, depth, brain);
+            total_expected_score += prob_outcome * val;
+        }
 
-            for (next_tile_val, prob_next_tile) in dist {
-                // --- BƯỚC ĐỒNG BỘ HÓA QUAN TRỌNG ---
-                // Gán giá trị dự đoán từ Tracker vào `hints`.
-                // Mục đích: Để hàm `search_move_node` ở độ sâu tiếp theo
-                // có dữ liệu đầu vào y hệt như Turn đầu tiên.
-                // Ta không quan tâm màu sắc hay dải range, ta gán thẳng giá trị cụ thể.
-                outcome_game.hints = vec![*next_tile_val];
-
-                // Bây giờ game state đã đầy đủ (Board mới + Hint mới giả lập)
-                // Gọi đệ quy xuống Move Node
-                let best_score_of_next_turn = self.search_move_node(&outcome_game, depth, brain);
-
-                // Cộng dồn: Điểm x Xác suất xảy ra con số này
-                outcome_value += prob_next_tile * best_score_of_next_turn;
-            }
-
-            // Cộng dồn vào tổng thể: Giá trị Outcome x Xác suất spawn ra Outcome này
-            total_expected_score += prob_outcome * outcome_value;
+        // Kiểm tra tính hội tụ (Floating point epsilon)
+        if (sum_prob - 1.0).abs() > 1e-9 {
+            panic!("Xác suất không bằng 1! Sum = {}", sum_prob);
         }
 
         total_expected_score
