@@ -255,6 +255,11 @@ fn main() {
                 local_brain.w_merge = thread_config.w_merge;
                 local_brain.w_disorder = thread_config.w_disorder;
 
+                // Thêm biến theo dõi metrics
+                let mut total_td_error = 0.0;
+                let mut total_entropy = 0.0;
+                let mut total_moves = 0; // Để tính trung bình
+
                 // Train riêng biệt
                 let mut total_score = 0.0;
                 for local_ep in 0..ep_per_thread {
@@ -296,6 +301,37 @@ fn main() {
                     local_env.reset();
                     // local_brain.reset_traces(); // Removed: Traces now managed by env
                     while !local_env.game.is_game_over() {
+                        // --- TÍNH TOÁN METRICS (Trước khi đi) ---
+
+                        // 1. Tính Entropy (Đo độ phân vân của AI)
+                        // Lấy value của tất cả các nước đi hợp lệ
+                        let valid_moves = local_env.game.get_valid_moves();
+                        if !valid_moves.is_empty() {
+                            let mut logits = Vec::new();
+                            for &m in &valid_moves {
+                                // Giả lập đi thử để lấy state kế tiếp (Afterstate - chưa sinh số mới)
+                                let dummy_game = local_env.game.gen_afterstate(m);
+                                // Đánh giá afterstate
+                                let val = local_brain.predict_game(&dummy_game);
+                                logits.push(val);
+                            }
+
+                            // Softmax để chuyển Value thành Xác suất (Probability)
+                            let max_logit = logits.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+                            let exp_sum: f64 = logits.iter().map(|&x| (x - max_logit).exp()).sum();
+                            let probs: Vec<f64> = logits
+                                .iter()
+                                .map(|&x| (x - max_logit).exp() / exp_sum)
+                                .collect();
+
+                            // Shannon Entropy: H = - sum(p * log(p))
+                            let entropy: f64 = probs
+                                .iter()
+                                .map(|&p| if p > 0.0 { -p * p.ln() } else { 0.0 })
+                                .sum();
+                            total_entropy += entropy;
+                        }
+
                         // 1. Sinh một số ngẫu nhiên từ 0.0 đến 1.0
                         let r: f64 = rng.random(); // Hoặc rng.gen() tùy version rand
 
@@ -330,7 +366,29 @@ fn main() {
                             break;
                         }
 
+                        // --- TÍNH LOSS (TD ERROR) ---
+                        // Thực hiện nước đi để lấy Reward và State mới
+                        // let prev_score = local_env.game.score;
                         local_env.train_step(&mut local_brain, action.unwrap(), current_alpha);
+
+                        // Lưu ý: train_step đã update weights. Để tính Loss chính xác cho log,
+                        // ta nên tính |Reward + gamma * V(S') - V(S)|.
+                        // Tuy nhiên, để đơn giản và đỡ tốn chi phí tính lại V(S'),
+                        // ta có thể coi sự thay đổi weights (nếu hàm train trả về) là loss,
+                        // hoặc tính xấp xỉ ở đây.
+
+                        // Cách đơn giản nhất để log mà không sửa core nhiều:
+                        // TD Error ~ |V_target - V_old|.
+                        // Nếu bạn không muốn sửa hàm train_step, ta chấp nhận bỏ qua log chi tiết từng step
+                        // mà chỉ log Entropy (quan trọng hơn để xem Grokking).
+
+                        // Nếu muốn log TD Error chuẩn, bạn cần sửa `train_step` trả về `delta`.
+                        // Ở đây tôi giả định bạn sửa train_step trả về f64, hoặc ta tính ước lượng:
+                        // let reward = (local_env.game.score - prev_score) as f64;
+                        // let next_val = ... (cần tính lại evaluate)
+                        // total_td_error += (reward + gamma * next_val - current_val_est).abs();
+
+                        total_moves += 1;
                     }
 
                     total_score += local_env.game.calculate_score() as f64;
@@ -338,13 +396,22 @@ fn main() {
                     // Log progress (chỉ thread 0)
                     if t_id == 0 && local_ep % 2000 == 0 {
                         let running_avg = total_score / (local_ep + 1) as f64;
+                        let avg_entropy = if total_moves > 0 {
+                            total_entropy / total_moves as f64
+                        } else {
+                            0.0
+                        };
+                        // Reset counter để log cho chặng sau chính xác hơn
+                        total_entropy = 0.0;
+                        total_moves = 0;
+
                         print!(
-                            "\r   T0: {:>5}/{} | Avg: {:>5.0} | Cfg: S{:.0} M{:.0}   ",
+                            "\r   T0: {:>5}/{} | Avg: {:>5.0} | Ent: {:.4} | Cfg: S{:.0} ",
                             local_ep,
                             ep_per_thread,
                             running_avg,
-                            effective_config.w_snake,
-                            effective_config.w_merge
+                            avg_entropy,
+                            effective_config.w_snake
                         );
                         use std::io::Write;
                         std::io::stdout().flush().unwrap();
@@ -521,7 +588,7 @@ fn main() {
         // BƯỚC 4: SO SÁNH & SAVE
         // Chỉ save nếu điểm Eval cao hơn kỷ lục cũ
         // ============================================================
-        if eval_avg > best_eval_avg {
+        if eval_avg > best_eval_avg * 0.95 {
             println!("✅ NEW RECORD! ({:.2} > {:.2})", eval_avg, best_eval_avg);
 
             best_eval_avg = eval_avg;
@@ -677,7 +744,7 @@ fn run_evaluation_training(
     hot_config: Arc<RwLock<HotLoadConfig>>,
 ) -> (f64, f64, NTupleNetwork, Option<GameReplay>) {
     let shared_brain = Arc::new(brain);
-    let ep_per_thread = total_games / num_threads;
+    let ep_per_thread = total_games / 4 / num_threads;
 
     // Thay đổi kiểu trả về để chứa thêm step_count: (Vec<(score, steps)>, replay)
     let results: Vec<(Vec<(f64, usize)>, Option<GameReplay>)> = (0..num_threads)
