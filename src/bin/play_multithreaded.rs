@@ -40,7 +40,7 @@ fn main() {
     let shared_brain = Arc::new(brain);
 
     // 3. Configuration
-    let total_games = 500;
+    let total_games = 100;
     let gamma = 1.0; // Gamma doesn't matter for pure play, but env needs it.
     let epsilon = 0.0; // Pure greedy
 
@@ -68,7 +68,7 @@ fn main() {
                 // Epsilon greedy (e=0 -> always best)
                 // We use 0.0 directly as requested
 
-                let action = env.get_best_action_depth(&brain_ref, 3).0;
+                let action = env.get_best_action_depth(&brain_ref, 4).0;
 
                 env.game.make_full_move(action.unwrap());
 
@@ -116,7 +116,7 @@ fn main() {
                 }
             }
 
-            if i % 50 == 0 {
+            if i % 10 == 0 {
                 print!(".");
                 use std::io::Write;
                 std::io::stdout().flush().unwrap();

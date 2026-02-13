@@ -100,7 +100,7 @@ fn main() {
 
     let current_hot = *hot_config.read().unwrap();
 
-    let chunk_episodes = current_hot.current_chunk.unwrap_or(80_000) as u32;
+    let chunk_episodes = current_hot.current_chunk.unwrap_or(320_000) as u32;
     let total_target_episodes = 100_000_000;
 
     // --- CHECKPOINT GỐC (SINGLE SOURCE OF TRUTH) ---
@@ -296,9 +296,33 @@ fn main() {
                     local_env.reset();
                     // local_brain.reset_traces(); // Removed: Traces now managed by env
                     while !local_env.game.is_game_over() {
-                        let action = if rng.random_bool(current_epsilon.into()) {
+                        // 1. Sinh một số ngẫu nhiên từ 0.0 đến 1.0
+                        let r: f64 = rng.random(); // Hoặc rng.gen() tùy version rand
+
+                        // 2. Cấu hình tỷ lệ chia trong Epsilon
+                        // Trong 0.1 epsilon đó, bạn muốn bao nhiêu phần là "Tinh túy" (Depth 2)?
+                        // Mình đề xuất 0.8 (80%). Còn lại 0.2 (20%) là "Nhiễu" (Random).
+                        let ratio_teacher = 0.1;
+
+                        // 3. Tính các ngưỡng
+                        // Ví dụ epsilon = 0.1:
+                        // - threshold_random = 0.1 * (1.0 - 0.8) = 0.02 (2% là Random thuần)
+                        // - threshold_epsilon = 0.1 (từ 0.02 đến 0.1 là Depth 2 -> 8% là Thầy giáo)
+                        let threshold_random = current_epsilon * (1.0 - ratio_teacher);
+                        let threshold_epsilon = current_epsilon;
+
+                        let action = if r < threshold_random {
+                            // --- PHẦN 1: NHIỄU (Random - "Thức ăn ôi thiu") ---
+                            // Giúp mạng học cách xử lý tình huống xấu, thoát kẹt
                             local_env.get_random_valid_action()
+                        } else if r < threshold_epsilon {
+                            // --- PHẦN 2: TINH TÚY (Depth 2 - "Yến sào") ---
+                            // Dạy mạng những nước đi tối ưu, nhìn xa 2 bước
+                            // Lưu ý: Gọi hàm depth 2 ở đây
+                            local_env.get_best_action_depth(&local_brain, 2).0
                         } else {
+                            // --- PHẦN 3: BÌNH DÂN (Depth 1 - "Cơm bụi") ---
+                            // Mạng tự đi bằng kiến thức hiện tại (Exploitation)
                             local_env.get_best_action_depth(&local_brain, 1).0
                         };
 
