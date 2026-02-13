@@ -368,26 +368,9 @@ fn main() {
 
                         // --- TÍNH LOSS (TD ERROR) ---
                         // Thực hiện nước đi để lấy Reward và State mới
-                        // let prev_score = local_env.game.score;
-                        local_env.train_step(&mut local_brain, action.unwrap(), current_alpha);
-
-                        // Lưu ý: train_step đã update weights. Để tính Loss chính xác cho log,
-                        // ta nên tính |Reward + gamma * V(S') - V(S)|.
-                        // Tuy nhiên, để đơn giản và đỡ tốn chi phí tính lại V(S'),
-                        // ta có thể coi sự thay đổi weights (nếu hàm train trả về) là loss,
-                        // hoặc tính xấp xỉ ở đây.
-
-                        // Cách đơn giản nhất để log mà không sửa core nhiều:
-                        // TD Error ~ |V_target - V_old|.
-                        // Nếu bạn không muốn sửa hàm train_step, ta chấp nhận bỏ qua log chi tiết từng step
-                        // mà chỉ log Entropy (quan trọng hơn để xem Grokking).
-
-                        // Nếu muốn log TD Error chuẩn, bạn cần sửa `train_step` trả về `delta`.
-                        // Ở đây tôi giả định bạn sửa train_step trả về f64, hoặc ta tính ước lượng:
-                        // let reward = (local_env.game.score - prev_score) as f64;
-                        // let next_val = ... (cần tính lại evaluate)
-                        // total_td_error += (reward + gamma * next_val - current_val_est).abs();
-
+                        let (td_error, _reward) = local_env.train_step(&mut local_brain, action.unwrap(), current_alpha);
+                        
+                        total_td_error += td_error;
                         total_moves += 1;
                     }
 
@@ -396,22 +379,17 @@ fn main() {
                     // Log progress (chỉ thread 0)
                     if t_id == 0 && local_ep % 2000 == 0 {
                         let running_avg = total_score / (local_ep + 1) as f64;
-                        let avg_entropy = if total_moves > 0 {
-                            total_entropy / total_moves as f64
-                        } else {
-                            0.0
-                        };
+                        let avg_entropy = if total_moves > 0 { total_entropy / total_moves as f64 } else { 0.0 };
+                        let avg_loss = if total_moves > 0 { total_td_error / total_moves as f64 } else { 0.0 };
+                        
                         // Reset counter để log cho chặng sau chính xác hơn
-                        total_entropy = 0.0;
+                        total_entropy = 0.0; 
+                        total_td_error = 0.0;
                         total_moves = 0;
 
                         print!(
-                            "\r   T0: {:>5}/{} | Avg: {:>5.0} | Ent: {:.4} | Cfg: S{:.0} ",
-                            local_ep,
-                            ep_per_thread,
-                            running_avg,
-                            avg_entropy,
-                            effective_config.w_snake
+                            "\r   T0: {:>5}/{} | Avg: {:>5.0} | Ent: {:.4} | Loss: {:.4} | Cfg: S{:.0} ",
+                            local_ep, ep_per_thread, running_avg, avg_entropy, avg_loss, effective_config.w_snake
                         );
                         use std::io::Write;
                         std::io::stdout().flush().unwrap();
