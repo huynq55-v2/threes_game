@@ -351,7 +351,13 @@ impl ThreesEnv {
         };
 
         // 5. Tính TD Error
-        let td_error = base_reward + self.gamma * v_next_after - v_after;
+        let td_error_raw = base_reward + self.gamma * v_next_after - v_after;
+
+        // 5.5. GRADIENT CLIPPING: Kẹp TD Error để tránh nổ gradient
+        // Khi gộp số to (192, 384...), Reward có thể vọt lên hàng trăm/nghìn,
+        // gây ra TD Error cực lớn -> cập nhật weights quá mạnh -> mạng dao động.
+        // Kẹp trong khoảng [-50, 50] giúp weights hội tụ mượt hơn.
+        let td_error = td_error_raw.clamp(-50.0, 50.0);
 
         // 6. Cập nhật Traces & Weights
         let effective_alpha = alpha / brain.tuples.len() as f64;
@@ -370,7 +376,7 @@ impl ThreesEnv {
             effective_alpha,
         );
 
-        (td_error.abs(), base_reward)
+        (td_error_raw.abs(), base_reward)
     }
 
     pub fn get_board_flat(&self) -> [u32; 16] {

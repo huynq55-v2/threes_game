@@ -100,7 +100,7 @@ fn main() {
 
     let current_hot = *hot_config.read().unwrap();
 
-    let chunk_episodes = current_hot.current_chunk.unwrap_or(320_000) as u32;
+    let chunk_episodes = current_hot.current_chunk.unwrap_or(160_000) as u32;
     let total_target_episodes = 100_000_000;
 
     // --- CHECKPOINT GỐC (SINGLE SOURCE OF TRUTH) ---
@@ -370,7 +370,9 @@ fn main() {
                         // Thực hiện nước đi để lấy Reward và State mới
                         let (td_error, _reward) = local_env.train_step(&mut local_brain, action.unwrap(), current_alpha);
                         
-                        total_td_error += td_error;
+                        // Clip loss cho log (trần 100) để dễ đọc
+                        let clipped_loss = td_error.min(100.0);
+                        total_td_error += clipped_loss;
                         total_moves += 1;
                     }
 
@@ -566,7 +568,7 @@ fn main() {
         // BƯỚC 4: SO SÁNH & SAVE
         // Chỉ save nếu điểm Eval cao hơn kỷ lục cũ
         // ============================================================
-        if eval_avg > best_eval_avg * 0.95 {
+        if eval_avg > best_eval_avg * 0.90 {
             println!("✅ NEW RECORD! ({:.2} > {:.2})", eval_avg, best_eval_avg);
 
             best_eval_avg = eval_avg;
